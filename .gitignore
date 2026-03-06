@@ -1,0 +1,72 @@
+# Build directories
+build/
+bin/
+lib/
+out/
+
+# Compiled Object files
+*.obj
+*.o
+*.o-*
+
+# Compiled Dynamic libraries
+*.dll
+*.so
+*.dylib
+
+# Compiled Static libraries
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Visual Studio cache/options directory
+.vs/
+.vscode/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Debug files
+*.dmp
+*.pdb
+*.ilk
+*.exp
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+tmpclaude-*-cwd
+tmp_*.txt
+nul
+
+# ImGui
+imgui.ini
+
+# Backup files
+*.bak
+*.backup
+*.deprecated
+*.old
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+*.user
+*.suo
+*.userosscache
+*.sln.docstates

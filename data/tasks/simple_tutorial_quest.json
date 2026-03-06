@@ -1,0 +1,142 @@
+{
+  "id": "quest_tutorial_001",
+  "name": "新手引导：基础操作",
+  "description": "学习游戏的基础操作",
+  "priority": "Main",
+
+  "narrativeIntent": "帮助玩家熟悉游戏基本操作",
+  "storyContext": "刚来到两宋世界，需要学习如何移动和交互",
+
+  "goals": [
+    {
+      "id": "goal_move_to_market",
+      "description": "移动到集市",
+      "type": "Primary",
+      "achievementConditions": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "market_square"
+          }
+        ]
+      },
+      "visible": true
+    },
+    {
+      "id": "goal_talk_to_merchant",
+      "description": "与商人对话",
+      "type": "Primary",
+      "achievementConditions": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Custom",
+            "target": "npc.merchant.talked_to",
+            "op": "Equal",
+            "value": true
+          }
+        ]
+      },
+      "visible": true
+    }
+  ],
+
+  "steps": [
+    {
+      "id": "step_move_to_market",
+      "description": "前往集市",
+      "prerequisites": {
+        "logicOp": "All",
+        "conditions": []
+      },
+      "completionCriteria": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "market_square"
+          }
+        ]
+      },
+      "onCompleteActions": [
+        {
+          "type": "ShowNotification",
+          "params": {
+            "message": "已到达集市！"
+          }
+        }
+      ],
+      "optional": false,
+      "replannable": false
+    },
+    {
+      "id": "step_talk_to_merchant",
+      "description": "与商人对话",
+      "prerequisites": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "market_square"
+          }
+        ]
+      },
+      "completionCriteria": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Custom",
+            "target": "npc.merchant.talked_to",
+            "op": "Equal",
+            "value": true
+          }
+        ]
+      },
+      "onCompleteActions": [
+        {
+          "type": "TriggerDialogue",
+          "params": {
+            "npcId": "merchant",
+            "dialogueId": "merchant_intro"
+          }
+        },
+        {
+          "type": "GiveItem",
+          "params": {
+            "itemId": "starter_kit",
+            "count": 1
+          }
+        }
+      ],
+      "optional": false,
+      "replannable": false
+    }
+  ],
+
+  "firstStepId": "step_move_to_market",
+
+  "acceptanceConditions": {
+    "logicOp": "All",
+    "conditions": []
+  },
+
+  "failureConditions": {
+    "logicOp": "Any",
+    "conditions": []
+  },
+
+  "autoAccept": true,
+  "replannable": false,
+
+  "subscribedEvents": [],
+
+  "prerequisiteTaskIds": [],
+  "nextTaskIds": ["quest_tutorial_002"]
+}

@@ -1,0 +1,322 @@
+{
+  "id": "quest_delivery_001",
+  "name": "紧急物资运送",
+  "description": "将紧急物资从杭州运送到受灾的临安府",
+  "priority": "Main",
+
+  "narrativeIntent": "玩家体验灾害时期的紧迫感，了解灾后救援的重要性",
+  "storyContext": "临安府遭受洪灾，急需粮食和药品。知府请求玩家协助运送物资。",
+
+  "goals": [
+    {
+      "id": "goal_pickup_supplies",
+      "description": "从杭州粮仓领取物资",
+      "type": "Primary",
+      "achievementConditions": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "hangzhou_granary"
+          },
+          {
+            "type": "Item",
+            "target": "player.inventory",
+            "op": "Contains",
+            "value": "emergency_supplies"
+          }
+        ]
+      },
+      "visible": true
+    },
+    {
+      "id": "goal_deliver_to_linan",
+      "description": "将物资运送到临安府",
+      "type": "Primary",
+      "achievementConditions": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "linan_prefecture"
+          },
+          {
+            "type": "Item",
+            "target": "player.inventory",
+            "op": "Contains",
+            "value": "emergency_supplies"
+          }
+        ]
+      },
+      "visible": true
+    },
+    {
+      "id": "goal_talk_to_magistrate",
+      "description": "向知府汇报",
+      "type": "Secondary",
+      "achievementConditions": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "linan_prefecture"
+          },
+          {
+            "type": "Custom",
+            "target": "npc.linan_magistrate.talked_to",
+            "op": "Equal",
+            "value": true
+          }
+        ]
+      },
+      "visible": false
+    }
+  ],
+
+  "steps": [
+    {
+      "id": "step_accept_quest",
+      "description": "接受任务",
+      "prerequisites": {
+        "logicOp": "All",
+        "conditions": []
+      },
+      "completionCriteria": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Custom",
+            "target": "quest.accepted",
+            "op": "Equal",
+            "value": true
+          }
+        ]
+      },
+      "onStartActions": [
+        {
+          "type": "ShowNotification",
+          "params": {
+            "message": "任务已接受：紧急物资运送"
+          }
+        }
+      ],
+      "optional": false,
+      "replannable": false
+    },
+    {
+      "id": "step_go_to_granary",
+      "description": "前往杭州粮仓",
+      "prerequisites": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Custom",
+            "target": "quest.accepted",
+            "op": "Equal",
+            "value": true
+          }
+        ]
+      },
+      "completionCriteria": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "hangzhou_granary"
+          }
+        ]
+      },
+      "onCompleteActions": [
+        {
+          "type": "ShowNotification",
+          "params": {
+            "message": "已到达杭州粮仓"
+          }
+        }
+      ],
+      "optional": false,
+      "replannable": true
+    },
+    {
+      "id": "step_pickup_supplies",
+      "description": "领取物资",
+      "prerequisites": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "hangzhou_granary"
+          }
+        ]
+      },
+      "completionCriteria": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Item",
+            "target": "player.inventory",
+            "op": "Contains",
+            "value": "emergency_supplies"
+          }
+        ]
+      },
+      "onStartActions": [
+        {
+          "type": "GiveItem",
+          "params": {
+            "itemId": "emergency_supplies",
+            "count": 1
+          }
+        },
+        {
+          "type": "ShowNotification",
+          "params": {
+            "message": "已领取紧急物资"
+          }
+        }
+      ],
+      "optional": false,
+      "replannable": true
+    },
+    {
+      "id": "step_travel_to_linan",
+      "description": "前往临安府",
+      "prerequisites": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Item",
+            "target": "player.inventory",
+            "op": "Contains",
+            "value": "emergency_supplies"
+          }
+        ]
+      },
+      "completionCriteria": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "linan_prefecture"
+          }
+        ]
+      },
+      "onCompleteActions": [
+        {
+          "type": "ShowNotification",
+          "params": {
+            "message": "已到达临安府"
+          }
+        }
+      ],
+      "optional": false,
+      "replannable": true,
+      "alternativeStepIds": ["step_travel_via_river", "step_travel_via_mountains"]
+    },
+    {
+      "id": "step_deliver_supplies",
+      "description": "交付物资",
+      "prerequisites": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Location",
+            "target": "player.location",
+            "op": "Equal",
+            "value": "linan_prefecture"
+          },
+          {
+            "type": "Item",
+            "target": "player.inventory",
+            "op": "Contains",
+            "value": "emergency_supplies"
+          }
+        ]
+      },
+      "completionCriteria": {
+        "logicOp": "All",
+        "conditions": [
+          {
+            "type": "Custom",
+            "target": "quest.delivered",
+            "op": "Equal",
+            "value": true
+          }
+        ]
+      },
+      "onCompleteActions": [
+        {
+          "type": "ShowNotification",
+          "params": {
+            "message": "物资已交付！"
+          }
+        },
+        {
+          "type": "GiveItem",
+          "params": {
+            "itemId": "coins",
+            "count": 1000
+          }
+        }
+      ],
+      "optional": false,
+      "replannable": true
+    }
+  ],
+
+  "firstStepId": "step_accept_quest",
+
+  "acceptanceConditions": {
+    "logicOp": "All",
+    "conditions": [
+      {
+        "type": "Time",
+        "target": "world.year",
+        "op": "GreaterEqual",
+        "value": 1135
+      }
+    ]
+  },
+
+  "failureConditions": {
+    "logicOp": "Any",
+    "conditions": [
+      {
+        "type": "Custom",
+        "target": "quest.time_limit",
+        "op": "Less",
+        "value": 0
+      },
+      {
+        "type": "Item",
+        "target": "player.inventory",
+        "op": "NotEqual",
+        "value": "emergency_supplies"
+      }
+    ]
+  },
+
+  "autoAccept": false,
+  "replannable": true,
+
+  "subscribedEvents": [
+    "world.disaster.flood",
+    "world.location.blocked",
+    "player.item.lost"
+  ],
+
+  "prerequisiteTaskIds": [],
+  "nextTaskIds": ["quest_reconstruction_001"]
+}
