@@ -14,9 +14,85 @@
 #include <atomic>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#ifdef CreateWindow
+#undef CreateWindow
+#endif
+#endif
+
+namespace {
+
+std::filesystem::path GetExecutableDirectory() {
+#ifdef _WIN32
+    char path[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return {};
+    }
+    return std::filesystem::path(path).parent_path();
+#else
+    return {};
+#endif
+}
+
+void PushUniquePath(std::vector<std::filesystem::path>& roots, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+
+    for (const auto& existing : roots) {
+        if (existing == path) {
+            return;
+        }
+    }
+
+    roots.push_back(path);
+}
+
+std::filesystem::path ResolveRuntimePath(const std::filesystem::path& path) {
+    if (path.empty() || path.is_absolute()) {
+        return path;
+    }
+
+    std::error_code ec;
+    std::vector<std::filesystem::path> roots;
+    PushUniquePath(roots, std::filesystem::current_path(ec));
+
+    std::filesystem::path probe = GetExecutableDirectory();
+    for (int i = 0; i < 6 && !probe.empty(); ++i) {
+        PushUniquePath(roots, probe);
+        const std::filesystem::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+
+    std::filesystem::path fallback;
+    for (const auto& root : roots) {
+        const std::filesystem::path candidate = root / path;
+        if (fallback.empty()) {
+            const std::filesystem::path absoluteCandidate = std::filesystem::absolute(candidate, ec);
+            fallback = ec ? candidate : absoluteCandidate;
+        }
+
+        if (std::filesystem::exists(candidate, ec)) {
+            const std::filesystem::path absoluteCandidate = std::filesystem::absolute(candidate, ec);
+            return ec ? candidate : absoluteCandidate;
+        }
+    }
+
+    return fallback.empty() ? path : fallback;
+}
+
+} // namespace
+
 namespace Song {
 
-Game::Game() : running_(false) {
+Game::Game(const GameOptions& options)
+    : options_(options)
+    , running_(false) {
 }
 
 Game::~Game() {
@@ -91,6 +167,8 @@ bool Game::InitializeEngine() {
         return false;
     }
 
+    world_ = std::make_unique<Next::World>();
+
     // Initialize World Streaming (CP7) - demo integration.
     streaming_ = std::make_unique<Next::Streaming::StreamingManager>();
     Next::Streaming::StreamingManagerConfig streamingCfg;
@@ -100,7 +178,7 @@ bool Game::InitializeEngine() {
     streamingCfg.maxConcurrentLoads = 32;
     streamingCfg.maxConcurrentUnloads = 16;
     streamingCfg.enablePrediction = false;
-    streamingCfg.allowPlaceholderCellLoad = true;  // demo runs even without authored cell files
+    streamingCfg.allowPlaceholderCellLoad = options_.allowPlaceholderCells;
     streamingCfg.cellDataDirectory = L"data\\world\\cells";
     streamingCfg.cellFileExtension = L".ncell";
     streamingCfg.logStreamingEvents = true;
@@ -138,6 +216,8 @@ void Game::ShutdownEngine() {
     // Shutdown asset manager (CP3)
     Next::AssetManager::Instance().Shutdown();
 
+    world_.reset();
+
     if (streaming_) {
         streaming_->Shutdown();
         streaming_.reset();
@@ -163,16 +243,19 @@ void Game::Run() {
 
     auto* window = window_;
     auto* input = input_;
-    auto* renderer = renderer_;
     auto& profiler = Next::Profiler::Instance();
     auto& jobSystem = Next::JobSystem::Instance();
 
-    RunJobSystemSelfTest();
-    RunAssetSystemTest();
-    RunECSSelfTest();
+    if (options_.runSelfTests) {
+        RunJobSystemSelfTest();
+        RunAssetSystemTest();
+        RunECSSelfTest();
+    }
 
     double previousTime = Next::GetTimeInSeconds();
+    const double smokeStart = previousTime;
     uint32_t frameCount = 0;
+    uint32_t totalFrames = 0;
     const uint32_t LOG_INTERVAL_FRAMES = 60; // Log stats every 60 frames (approx 1 second at 60fps)
 
     while (!window->ShouldClose() && running_) {
@@ -199,12 +282,6 @@ void Game::Run() {
         // Main thread helps consume budgeted jobs (up to 0.25ms)
         jobSystem.Pump(0.25);
 
-        // Render
-        renderer->BeginFrame();
-        renderer->Render();
-        renderer->EndFrame();
-        window->SwapBuffers();
-
         // Cap framerate at 120 FPS for development
         if (deltaTime < 0.00833f) {
             Next::SleepMs(static_cast<uint32_t>((0.00833f - deltaTime) * 1000.0f));
@@ -214,9 +291,17 @@ void Game::Run() {
 
         // Log stats periodically
         frameCount++;
+        totalFrames++;
         if (frameCount >= LOG_INTERVAL_FRAMES) {
             profiler.LogStats();
             frameCount = 0;
+        }
+
+        if (options_.smokeFrames > 0 && totalFrames >= options_.smokeFrames) {
+            running_ = false;
+        }
+        if (options_.smokeSeconds > 0.0 && (currentTime - smokeStart) >= options_.smokeSeconds) {
+            running_ = false;
         }
     }
 
@@ -249,8 +334,9 @@ void Game::HandleInput(float deltaTime) {
 }
 
 void Game::UpdateGame(float deltaTime) {
-    // Update game logic
-    // TODO: Implement world and entity updates in CP4/CP7
+    if (world_) {
+        world_->Update(deltaTime);
+    }
 
     if (streaming_) {
         const Next::Vec3 pos(camX_, camY_, camZ_);
@@ -267,8 +353,14 @@ void Game::UpdateGame(float deltaTime) {
 }
 
 void Game::Render() {
-    // Render scene
-    // TODO: Implement proper rendering in CP5
+    if (!renderer_ || !window_) {
+        return;
+    }
+
+    renderer_->BeginFrame();
+    renderer_->Render();
+    renderer_->EndFrame();
+    window_->SwapBuffers();
 }
 
 void Game::RunJobSystemSelfTest() {
@@ -305,7 +397,7 @@ void Game::RunAssetSystemTest() {
     NEXT_CPU_SCOPE("AssetSystemTest");
     
     namespace fs = std::filesystem;
-    fs::path packagePath = fs::path("assets") / "test_package.npkg";
+    fs::path packagePath = ResolveRuntimePath(fs::path("assets") / "test_package.npkg");
     std::string packageName = packagePath.stem().string();
     
     if (!fs::exists(packagePath)) {
@@ -338,7 +430,7 @@ void Game::RunAssetSystemTest() {
 
     // Optional: if an imported package exists, load it too.
     {
-        fs::path imported = fs::path("assets") / "tri_import.npkg";
+        fs::path imported = ResolveRuntimePath(fs::path("assets") / "tri_import.npkg");
         if (fs::exists(imported)) {
             NEXT_LOG_INFO("Loading imported package: %s", imported.string().c_str());
             if (assetManager.LoadPackage(imported.string())) {

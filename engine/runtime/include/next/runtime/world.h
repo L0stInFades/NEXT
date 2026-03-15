@@ -5,7 +5,6 @@
 #include "next/runtime/transform.h"
 #include "next/runtime/component.h"
 #include "next/runtime/system.h"
-#include "next/runtime/query.h"
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>

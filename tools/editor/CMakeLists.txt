@@ -23,6 +23,6 @@ target_link_libraries(next_editor PRIVATE
 add_dependencies(next_editor next_assetc)
 
 if (MSVC)
-    # Editor relies on relative shader paths; set VS working directory to repo root.
+    # Keep VS debugging rooted at the repo for convenience; runtime asset lookup also works outside VS.
     set_property(TARGET next_editor PROPERTY VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()

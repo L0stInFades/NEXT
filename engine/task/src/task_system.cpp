@@ -15,26 +15,38 @@ namespace Next {
 
 // 使用统一日志系统
 
+namespace {
+
+void WarnUnsupportedConditionOnce(const char* label) {
+    static std::unordered_map<std::string, bool> warned;
+    if (warned[label]) {
+        return;
+    }
+
+    warned[label] = true;
+    NEXT_LOG_WARN() << "Condition evaluation for '" << label
+                    << "' is not backed by runtime data yet; returning false conservatively";
+}
+
+} // namespace
+
 // ============================================================================
 // 条件系统实现
 // ============================================================================
 
 bool Condition::Evaluate(const World* world) const {
-    // 框架实现：简化版本的条件评估
     switch (type) {
         case ConditionType::None:
             return true;
 
         case ConditionType::Time: {
-            // 时间条件：检查当前游戏时间
-            // 实际实现需要从 World 获取时间
-            return true;
+            WarnUnsupportedConditionOnce("Time");
+            return false;
         }
 
         case ConditionType::Location: {
-            // 地点条件：检查实体是否在指定区域
-            // 实际实现需要从 World 查询实体位置
-            return true;
+            WarnUnsupportedConditionOnce("Location");
+            return false;
         }
 
         case ConditionType::Composite: {
@@ -57,11 +69,27 @@ bool Condition::Evaluate(const World* world) const {
         }
 
         case ConditionType::Custom:
-            // 自定义条件：需要外部提供评估函数
-            return true;
+            WarnUnsupportedConditionOnce("Custom");
+            return false;
+
+        case ConditionType::Relationship:
+            WarnUnsupportedConditionOnce("Relationship");
+            return false;
+
+        case ConditionType::Item:
+            WarnUnsupportedConditionOnce("Item");
+            return false;
+
+        case ConditionType::TownState:
+            WarnUnsupportedConditionOnce("TownState");
+            return false;
+
+        case ConditionType::WorldEvent:
+            WarnUnsupportedConditionOnce("WorldEvent");
+            return false;
 
         default:
-            return true;
+            return false;
     }
 }
 
@@ -281,16 +309,23 @@ TaskExecutor::~TaskExecutor() {
 }
 
 void TaskExecutor::Initialize() {
+    if (initialized_) {
+        return;
+    }
+
+    initialized_ = true;
     NEXT_LOG_INFO() << "TaskExecutor::Initialize: Task executor initialized";
 }
 
 void TaskExecutor::Shutdown() {
-    // 保存所有活动任务
-    if (config_.enableAutoSave) {
-        // TODO: 实现自动保存
+    if (!initialized_) {
+        return;
     }
 
+    FlushAutoSaveIfNeeded(true);
+
     taskInstances_.clear();
+    initialized_ = false;
     NEXT_LOG_INFO() << "TaskExecutor::Shutdown: Task executor shut down";
 }
 
@@ -309,6 +344,8 @@ void TaskExecutor::Update(float deltaTime) {
             UpdateTask(instance.get(), deltaTime);
         }
     }
+
+    FlushAutoSaveIfNeeded();
 }
 
 void TaskExecutor::UpdateTask(TaskInstance* instance, float deltaTime) {
@@ -333,6 +370,7 @@ void TaskExecutor::UpdateCurrentStep(TaskInstance* instance) {
             if (step && step->CanStart(world_)) {
                 instance->SetStepStatus(instance->currentStepId, StepStatus::InProgress);
                 ExecuteActions(step->onStartActions);
+                MarkStateDirty();
 
                 NEXT_LOG_INFO() << "TaskExecutor: Starting step '" << step->id << "' of task '" << instance->definition->id << "'";
             }
@@ -349,6 +387,7 @@ void TaskExecutor::UpdateCurrentStep(TaskInstance* instance) {
     if (currentStatus == StepStatus::InProgress && step->IsComplete(world_)) {
         instance->SetStepStatus(instance->currentStepId, StepStatus::Completed);
         ExecuteActions(step->onCompleteActions);
+        MarkStateDirty();
 
         NEXT_LOG_INFO() << "TaskExecutor: Completed step '" << step->id << "' of task '" << instance->definition->id << "'";
 
@@ -361,6 +400,7 @@ void TaskExecutor::UpdateCurrentStep(TaskInstance* instance) {
                 if (s.CanStart(world_)) {
                     instance->SetStepStatus(s.id, StepStatus::InProgress);
                     ExecuteActions(s.onStartActions);
+                    MarkStateDirty();
 
                     NEXT_LOG_INFO() << "TaskExecutor: Starting next step '" << s.id << "'";
                 }
@@ -373,6 +413,7 @@ void TaskExecutor::UpdateCurrentStep(TaskInstance* instance) {
     if (currentStatus == StepStatus::InProgress && step->HasFailed(world_)) {
         instance->SetStepStatus(instance->currentStepId, StepStatus::Failed);
         ExecuteActions(step->onFailActions);
+        MarkStateDirty();
 
         NEXT_LOG_WARN() << "TaskExecutor: Step '" << step->id << "' of task '" << instance->definition->id << "' failed";
     }
@@ -396,6 +437,7 @@ void TaskExecutor::CheckTaskCompletion(TaskInstance* instance) {
         if (goal.type == GoalType::Primary && !instance->IsGoalAchieved(goal.id)) {
             if (goal.IsAchieved(world_)) {
                 instance->SetGoalAchieved(goal.id, true);
+                MarkStateDirty();
             } else {
                 allGoalsAchieved = false;
             }
@@ -443,6 +485,7 @@ TaskInstance* TaskExecutor::StartTask(const TaskDefinition* definition) {
 
     stats_.totalTasksStarted++;
     stats_.activeTasks++;
+    MarkStateDirty();
 
     NEXT_LOG_INFO() << "TaskExecutor::StartTask: Started task '" << definition->id << "' (instance: " << instanceId << ")";
 
@@ -466,6 +509,7 @@ void TaskExecutor::CompleteTask(const std::string& instanceId) {
     stats_.averageCompletionTime =
         (stats_.averageCompletionTime * (stats_.totalTasksCompleted - 1) + completionTime) /
         stats_.totalTasksCompleted;
+    MarkStateDirty();
 
     NEXT_LOG_INFO() << "TaskExecutor::CompleteTask: Completed task '" << instance->definition->id << "' (instance: " << instanceId << ", time: " << completionTime << " s)";
 
@@ -492,6 +536,7 @@ void TaskExecutor::FailTask(const std::string& instanceId) {
 
     stats_.totalTasksFailed++;
     stats_.activeTasks--;
+    MarkStateDirty();
 
     NEXT_LOG_WARN() << "TaskExecutor::FailTask: Failed task '" << instance->definition->id << "' (instance: " << instanceId << ")";
 }
@@ -503,6 +548,7 @@ void TaskExecutor::AbandonTask(const std::string& instanceId) {
     TaskInstance* instance = it->second.get();
     instance->status = TaskStatus::Abandoned;
     stats_.activeTasks--;
+    MarkStateDirty();
 
     NEXT_LOG_INFO() << "TaskExecutor::AbandonTask: Abandoned task '" << instance->definition->id << "' (instance: " << instanceId << ")";
 }
@@ -551,6 +597,16 @@ const TaskDefinition* TaskExecutor::GetTaskDefinition(const std::string& taskId)
     return it != taskDefinitions_.end() ? &it->second : nullptr;
 }
 
+std::vector<const TaskDefinition*> TaskExecutor::GetRegisteredTaskDefinitions() const {
+    std::vector<const TaskDefinition*> definitions;
+    definitions.reserve(taskDefinitions_.size());
+    for (const auto& [taskId, definition] : taskDefinitions_) {
+        (void)taskId;
+        definitions.push_back(&definition);
+    }
+    return definitions;
+}
+
 void TaskExecutor::ProcessEvent(const std::string& eventId, const void* eventData) {
     // 查找订阅了此事件的任务
     auto it = eventToTasks_.find(eventId);
@@ -575,8 +631,11 @@ void TaskExecutor::ProcessEvent(const std::string& eventId, const void* eventDat
 
             // 更新任务
             UpdateTask(instance, 0.0f);
+            MarkStateDirty();
         }
     }
+
+    FlushAutoSaveIfNeeded();
 }
 
 void TaskExecutor::SubscribeToEvents(TaskInstance* instance) {
@@ -853,6 +912,7 @@ bool TaskExecutor::LoadState(const std::string& filePath) {
     }
 
     des->EndObject();  // root
+    autoSaveDirty_ = false;
 
     return true;
 }
@@ -870,6 +930,37 @@ void TaskExecutor::ExecuteActions(const std::vector<Action>& actions) {
     for (const auto& action : actions) {
         action.Execute(world_);
     }
+}
+
+void TaskExecutor::MarkStateDirty() {
+    if (config_.enableAutoSave && config_.autoSaveOnStateChange) {
+        autoSaveDirty_ = true;
+    }
+}
+
+void TaskExecutor::FlushAutoSaveIfNeeded(bool force) {
+    if (!config_.enableAutoSave) {
+        autoSaveDirty_ = false;
+        return;
+    }
+
+    if (!force && !autoSaveDirty_) {
+        return;
+    }
+
+    if (config_.autoSavePath.empty()) {
+        NEXT_LOG_WARN() << "TaskExecutor::FlushAutoSaveIfNeeded: auto-save path is empty; skipping";
+        autoSaveDirty_ = false;
+        return;
+    }
+
+    if (!SaveState(config_.autoSavePath)) {
+        NEXT_LOG_ERROR() << "TaskExecutor::FlushAutoSaveIfNeeded: failed to write auto-save '"
+                         << config_.autoSavePath << "'";
+        return;
+    }
+
+    autoSaveDirty_ = false;
 }
 
 // ============================================================================
@@ -905,22 +996,106 @@ bool TaskScheduler::IsTaskAvailable(const std::string& taskId) {
 
 std::vector<std::string> TaskScheduler::GetAvailableTasks() {
     std::vector<std::string> availableTasks;
+    const auto definitions = executor_->GetRegisteredTaskDefinitions();
+    const auto tasks = executor_->GetAllTasks();
 
-    // TODO: 遍历所有已注册的任务定义
-    // 当前简化实现
+    for (const TaskDefinition* definition : definitions) {
+        if (!definition) {
+            continue;
+        }
+
+        bool alreadyTracked = false;
+        for (const TaskInstance* task : tasks) {
+            if (!task || !task->definition) {
+                continue;
+            }
+            if (task->definition->id == definition->id &&
+                task->status != TaskStatus::Abandoned &&
+                task->status != TaskStatus::Failed) {
+                alreadyTracked = true;
+                break;
+            }
+        }
+
+        if (alreadyTracked) {
+            continue;
+        }
+
+        if (CheckPrerequisites(*definition) && executor_->CanStartTask(definition)) {
+            availableTasks.push_back(definition->id);
+        }
+    }
 
     return availableTasks;
 }
 
 void TaskScheduler::ProcessEvent(const std::string& eventId, const void* eventData) {
     if (!config_.enableEventBasedTriggering) return;
+    executor_->ProcessEvent(eventId, eventData);
 
-    // 检查是否有任务应该被此事件触发
-    // TODO: 实现完整的事件触发逻辑
+    const auto definitions = executor_->GetRegisteredTaskDefinitions();
+    for (const TaskDefinition* definition : definitions) {
+        if (!definition || !definition->autoAccept) {
+            continue;
+        }
+
+        if (std::find(definition->subscribedEvents.begin(),
+                      definition->subscribedEvents.end(),
+                      eventId) == definition->subscribedEvents.end()) {
+            continue;
+        }
+
+        if (!CheckPrerequisites(*definition) || !executor_->CanStartTask(definition)) {
+            continue;
+        }
+
+        bool alreadyTracked = false;
+        for (TaskInstance* task : executor_->GetAllTasks()) {
+            if (!task || !task->definition) {
+                continue;
+            }
+            if (task->definition->id == definition->id &&
+                task->status != TaskStatus::Abandoned &&
+                task->status != TaskStatus::Failed) {
+                alreadyTracked = true;
+                break;
+            }
+        }
+
+        if (!alreadyTracked) {
+            executor_->StartTask(definition);
+        }
+    }
 }
 
 void TaskScheduler::CheckAutoAcceptTasks() {
-    // TODO: 检查所有可自动接取的任务
+    const auto definitions = executor_->GetRegisteredTaskDefinitions();
+    for (const TaskDefinition* definition : definitions) {
+        if (!definition || !definition->autoAccept) {
+            continue;
+        }
+
+        if (!CheckPrerequisites(*definition) || !executor_->CanStartTask(definition)) {
+            continue;
+        }
+
+        bool alreadyTracked = false;
+        for (TaskInstance* task : executor_->GetAllTasks()) {
+            if (!task || !task->definition) {
+                continue;
+            }
+            if (task->definition->id == definition->id &&
+                task->status != TaskStatus::Abandoned &&
+                task->status != TaskStatus::Failed) {
+                alreadyTracked = true;
+                break;
+            }
+        }
+
+        if (!alreadyTracked) {
+            executor_->StartTask(definition);
+        }
+    }
 }
 
 bool TaskScheduler::CheckPrerequisites(const TaskDefinition& definition) {
@@ -1031,8 +1206,7 @@ bool TaskReplanner::FindAlternativeStep(TaskInstance* instance, const std::strin
 
 bool TaskReplanner::CreateRemedialTask(TaskInstance* instance, const std::string& reason) {
     NEXT_LOG_INFO() << "Creating remedial task for: " << reason;
-    // TODO: 实现补救任务创建
-    return true;
+    return false;
 }
 
 // ============================================================================

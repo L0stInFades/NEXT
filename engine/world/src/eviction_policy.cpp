@@ -166,7 +166,7 @@ void EvictionPolicy::RecordAccess(const CellCoord& coord, uint64_t frame) {
     AccessInfo info;
     info.lastAccessFrame = frame;
     info.accessCount = 1;
-    info.lastAccessTime = 0.0f;  // TODO: Track actual time
+    info.lastAccessTime = static_cast<float>(frame);
 
     accessInfo_[coord] = info;
 }

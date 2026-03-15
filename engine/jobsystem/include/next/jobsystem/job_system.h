@@ -154,6 +154,11 @@ public:
      */
     JobSystemStats GetStats() const;
 
+    /**
+     * @brief Check whether the job system has active worker infrastructure.
+     */
+    bool IsInitialized() const { return running_; }
+
 private:
     JobSystem() = default;
     ~JobSystem() = default;

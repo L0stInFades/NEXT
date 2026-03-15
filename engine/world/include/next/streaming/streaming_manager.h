@@ -69,6 +69,7 @@ struct StreamingStatistics {
     // Errors
     uint32_t failedLoads;
     uint32_t timeoutErrors;
+    uint32_t placeholderCells;
 };
 
 // ===== Streaming Manager Configuration =====
@@ -243,6 +244,7 @@ private:
 
     // Statistics tracking
     void UpdateStatistics(float deltaTime);
+    void ReleaseCellLayers(CellData* cell);
 
     // Configuration
     StreamingManagerConfig config_;
@@ -265,6 +267,7 @@ private:
         std::wstring filePath;     // cell package path
         std::string packageName;   // derived from file stem
         uint64_t fileBytes = 0;
+        bool packageBacked = false;
     };
     std::unordered_map<CellCoord, ActiveCellOp, CellCoord::Hash> activeLoadOperations_;
     std::unordered_map<CellCoord, Next::JobHandle, CellCoord::Hash> activeUnloadOperations_;
@@ -273,8 +276,10 @@ private:
         CellCoord coord;
         bool isLoad = true;
         bool success = false;
+        bool packageBacked = false;
         std::string packageName;
         uint64_t bytes = 0;
+        std::vector<uint8_t> rawCellData;
         std::string error;
     };
     mutable std::mutex completionMutex_;

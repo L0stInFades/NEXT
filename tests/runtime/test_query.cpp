@@ -4,6 +4,7 @@
 #include "next/runtime/component.h"
 #include "next/foundation/logger.h"
 #include <gtest/gtest.h>
+#include <cstring>
 
 namespace Next {
 namespace testing {
@@ -40,12 +41,16 @@ TEST_F(QueryTest, QueryAllSingleComponent) {
     world_.AddComponent<TransformComponent>(e2);
     // e3 has no TransformComponent
 
-    Query query(world_);
-    query.All<TransformComponent>();
+    auto query = Query(world_).All<TransformComponent>();
+    std::vector<Entity> visited;
+    query.ForEach([&](Entity entity) {
+        visited.push_back(entity);
+    });
 
-    // Note: Query.ForEach is not implemented in the current version
-    // This test verifies compilation and basic construction
-    SUCCEED();
+    EXPECT_EQ(visited.size(), 2u);
+    EXPECT_NE(std::find(visited.begin(), visited.end(), e1), visited.end());
+    EXPECT_NE(std::find(visited.begin(), visited.end(), e2), visited.end());
+    EXPECT_EQ(std::find(visited.begin(), visited.end(), e3), visited.end());
 }
 
 // Test query all with multiple component types
@@ -59,10 +64,21 @@ TEST_F(QueryTest, QueryAllMultipleComponents) {
     world_.AddComponent<TransformComponent>(e2);
     // e2 has no NameComponent
 
-    Query query(world_);
-    query.All<TransformComponent, NameComponent>();
+    auto query = Query(world_).All<TransformComponent, NameComponent>();
+    size_t visits = 0;
+    query.ForEach([&](Entity entity, TransformComponent& transform, NameComponent& name) {
+        (void)entity;
+        transform.position[0] = 42.0f;
+        std::strncpy(name.name, "Visited", NameComponent::MAX_NAME_LENGTH - 1);
+        name.name[NameComponent::MAX_NAME_LENGTH - 1] = '\0';
+        visits++;
+    });
 
-    SUCCEED();
+    EXPECT_EQ(visits, 1u);
+    ASSERT_NE(world_.GetComponent<TransformComponent>(e1), nullptr);
+    EXPECT_FLOAT_EQ(world_.GetComponent<TransformComponent>(e1)->position[0], 42.0f);
+    EXPECT_STREQ(world_.GetComponent<NameComponent>(e1)->name, "Visited");
+    EXPECT_EQ(world_.GetComponent<TransformComponent>(e2)->position[0], 0.0f);
 }
 
 // Test world query entities with as alternative

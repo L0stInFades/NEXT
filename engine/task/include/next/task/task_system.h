@@ -397,9 +397,11 @@ struct TaskInstance {
 struct TaskExecutorConfig {
     bool enableEventProcessing = true;
     bool enableAutoSave = true;
+    bool autoSaveOnStateChange = true;
     bool enableReplay = true;
     float updateInterval = 0.1f;  // 更新间隔（秒）
     size_t maxHistorySize = 1000; // 最大历史记录数
+    std::string autoSavePath = "task_state_autosave.json";
 };
 
 /**
@@ -430,6 +432,7 @@ public:
     void RegisterTaskDefinition(const TaskDefinition& definition);
     void UnregisterTaskDefinition(const std::string& taskId);
     const TaskDefinition* GetTaskDefinition(const std::string& taskId) const;
+    std::vector<const TaskDefinition*> GetRegisteredTaskDefinitions() const;
 
     // 事件处理
     void ProcessEvent(const std::string& eventId, const void* eventData);
@@ -452,6 +455,7 @@ public:
     };
     Statistics GetStatistics() const { return stats_; }
     void ResetStatistics();
+    bool CanStartTask(const TaskDefinition* definition);
 
 private:
     World* world_;
@@ -470,11 +474,14 @@ private:
     void CheckTaskCompletion(TaskInstance* instance);
     void CheckTaskFailure(TaskInstance* instance);
 
-    bool CanStartTask(const TaskDefinition* definition);
     void ExecuteActions(const std::vector<Action>& actions);
+    void MarkStateDirty();
+    void FlushAutoSaveIfNeeded(bool force = false);
 
     Statistics stats_;
     float accumulatedTime_ = 0.0f;
+    bool autoSaveDirty_ = false;
+    bool initialized_ = false;
 };
 
 // ============================================================================

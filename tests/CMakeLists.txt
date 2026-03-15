@@ -81,6 +81,13 @@ add_executable(test_task_system
 target_link_libraries(test_task_system PRIVATE ${TEST_LIBRARIES} next_task)
 add_test(NAME TaskSystemTest COMMAND test_task_system)
 
+# Script System Tests (CP8)
+add_executable(test_script_system
+    script/test_script_system.cpp
+)
+target_link_libraries(test_script_system PRIVATE ${TEST_LIBRARIES} next_script)
+add_test(NAME ScriptSystemTest COMMAND test_script_system)
+
 # Run all tests with CTest
 set_target_properties(test_foundation test_jobsystem test_runtime test_platform test_math
     PROPERTIES
@@ -93,6 +100,11 @@ set_target_properties(test_world_streaming
 )
 
 set_target_properties(test_task_system
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/tests
+)
+
+set_target_properties(test_script_system
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/tests
 )

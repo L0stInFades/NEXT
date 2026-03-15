@@ -3,12 +3,134 @@
 #include "next/runtime/asset/asset_manager.h"
 #include "next/jobsystem/job_system.h"
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
-#include <unordered_set>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <unordered_set>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace Next {
 namespace Streaming {
+
+namespace {
+
+std::filesystem::path GetExecutableDirectory() {
+#ifdef _WIN32
+    wchar_t path[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return {};
+    }
+    return std::filesystem::path(path).parent_path();
+#else
+    return {};
+#endif
+}
+
+void PushUniquePath(std::vector<std::filesystem::path>& roots, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+
+    for (const auto& existing : roots) {
+        if (existing == path) {
+            return;
+        }
+    }
+
+    roots.push_back(path);
+}
+
+std::filesystem::path ResolveRuntimePath(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    if (path.is_absolute()) {
+        const std::filesystem::path absolutePath = std::filesystem::absolute(path, ec);
+        return ec ? path : absolutePath;
+    }
+
+    std::vector<std::filesystem::path> roots;
+    PushUniquePath(roots, std::filesystem::current_path(ec));
+
+    std::filesystem::path probe = GetExecutableDirectory();
+    for (int i = 0; i < 6 && !probe.empty(); ++i) {
+        PushUniquePath(roots, probe);
+        const std::filesystem::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+
+    std::filesystem::path fallback;
+    for (const auto& root : roots) {
+        const std::filesystem::path candidate = root / path;
+        if (fallback.empty()) {
+            const std::filesystem::path absoluteCandidate = std::filesystem::absolute(candidate, ec);
+            fallback = ec ? candidate : absoluteCandidate;
+        }
+
+        if (std::filesystem::exists(candidate, ec)) {
+            const std::filesystem::path absoluteCandidate = std::filesystem::absolute(candidate, ec);
+            return ec ? candidate : absoluteCandidate;
+        }
+    }
+
+    return fallback.empty() ? path : fallback;
+}
+
+std::filesystem::path BuildCellFileName(const CellCoord& coord, const std::wstring& extension) {
+    return std::filesystem::path(L"cell_" + std::to_wstring(coord.x) + L"_" + std::to_wstring(coord.z) + extension);
+}
+
+std::filesystem::path ResolveCellFilePath(const std::filesystem::path& root,
+                                          const CellCoord& coord,
+                                          const std::wstring& preferredExtension) {
+    std::vector<std::wstring> extensions;
+    auto pushUniqueExt = [&](const std::wstring& ext) {
+        if (ext.empty()) {
+            return;
+        }
+        for (const auto& existing : extensions) {
+            if (existing == ext) {
+                return;
+            }
+        }
+        extensions.push_back(ext);
+    };
+
+    pushUniqueExt(preferredExtension.empty() ? L".ncell" : preferredExtension);
+    pushUniqueExt(L".ncell");
+    pushUniqueExt(L".npkg");
+
+    std::error_code ec;
+    std::filesystem::path fallback;
+    for (const auto& extension : extensions) {
+        const std::filesystem::path candidate = root / BuildCellFileName(coord, extension);
+        if (fallback.empty()) {
+            fallback = candidate;
+        }
+        if (std::filesystem::exists(candidate, ec)) {
+            return candidate;
+        }
+    }
+
+    return fallback;
+}
+
+bool IsPackageCellPath(const std::filesystem::path& path) {
+    return path.extension() == ".npkg";
+}
+
+} // namespace
 
 // ===== Streaming Manager Implementation =====
 
@@ -30,6 +152,7 @@ bool StreamingManager::Initialize(const StreamingManagerConfig& config) {
     }
 
     config_ = config;
+    config_.cellDataDirectory = ResolveRuntimePath(std::filesystem::path(config.cellDataDirectory)).wstring();
 
     // Initialize sub-systems
     worldPartition_ = std::make_unique<WorldPartition>();
@@ -189,6 +312,13 @@ void StreamingManager::Update(float deltaTime, const Vec3& cameraPosition, const
     ProcessLoadQueue();
     ProcessUnloadQueue();
 
+    // Tests and headless tools may use StreamingManager without booting worker threads.
+    // In that mode, drain queued jobs on the main thread so cell IO still makes progress.
+    if (!Next::JobSystem::Instance().IsInitialized()) {
+        Next::JobSystem::Instance().Pump(-1.0);
+        ProcessCellOpCompletions();
+    }
+
     // Enforce memory budget
     EnforceMemoryBudget();
 
@@ -215,7 +345,7 @@ void StreamingManager::ProcessCellOpCompletions() {
 
             if (!cell) {
                 // Cell no longer exists; drop the package ref if we loaded it.
-                if (c.success && !c.packageName.empty()) {
+                if (c.success && c.packageBacked && !c.packageName.empty()) {
                     Next::AssetManager::Instance().UnloadPackage(c.packageName);
                 }
                 continue;
@@ -229,10 +359,10 @@ void StreamingManager::ProcessCellOpCompletions() {
 
             // If the cell was requested to unload while loading, immediately release the package.
             if (cell->state == CellLoadState::Unloading || cell->state == CellLoadState::Unloaded) {
-                if (!c.packageName.empty()) {
+                if (c.packageBacked && !c.packageName.empty()) {
                     Next::AssetManager::Instance().UnloadPackage(c.packageName);
                 }
-                cell->layers.clear();
+                ReleaseCellLayers(cell);
                 cell->metadata.memorySize = 0;
                 cell->metadata.dataSize = 0;
                 worldPartition_->UpdateCellState(c.coord, CellLoadState::Unloaded);
@@ -240,33 +370,57 @@ void StreamingManager::ProcessCellOpCompletions() {
             }
 
             // Track which package backs this cell (used for unload).
-            if (!c.packageName.empty()) {
+            if (c.packageBacked && !c.packageName.empty()) {
                 cellToPackageName_[c.coord] = c.packageName;
+            } else {
+                cellToPackageName_.erase(c.coord);
             }
 
-            // Mark the cell layer loaded. For now, a cell is backed by a single package (cell_x_z.*).
+            void* layerData = nullptr;
+            if (!c.packageBacked) {
+                if (c.rawCellData.empty()) {
+                    worldPartition_->UpdateCellState(c.coord, CellLoadState::Error);
+                    stats_.failedLoads++;
+                    continue;
+                }
+
+                layerData = memoryPool_ ? memoryPool_->Allocate(c.rawCellData.size(), alignof(std::max_align_t)) : nullptr;
+                if (!layerData) {
+                    NEXT_LOG_ERROR("Failed to allocate %zu bytes for cell (%d,%d)",
+                                   c.rawCellData.size(), c.coord.x, c.coord.z);
+                    worldPartition_->UpdateCellState(c.coord, CellLoadState::Error);
+                    stats_.failedLoads++;
+                    continue;
+                }
+
+                std::memcpy(layerData, c.rawCellData.data(), c.rawCellData.size());
+            }
+
             CellData::LayerData ld;
             ld.layer = CellLayer::StaticMesh;
-            ld.data = nullptr;
+            ld.data = layerData;
             ld.size = c.bytes;
             ld.state = CellLoadState::Loaded;
             cell->layers[CellLayer::StaticMesh] = ld;
 
+            cell->isPlaceholderData = false;
             cell->metadata.dataSize = c.bytes;
             cell->metadata.memorySize = c.bytes; // approximate: package runtime memory ~= on-disk size (placeholder)
             worldPartition_->UpdateCellState(c.coord, CellLoadState::Loaded);
             evictionPolicy_->RecordAccess(c.coord, currentFrame_);
         } else {
             activeUnloadOperations_.erase(c.coord);
+            cellToPackageName_.erase(c.coord);
 
             if (!cell) {
                 continue;
             }
 
             // Unload completion always transitions to Unloaded in this framework implementation.
-            cell->layers.clear();
+            ReleaseCellLayers(cell);
             cell->metadata.memorySize = 0;
             cell->metadata.dataSize = 0;
+            cell->isPlaceholderData = false;
             worldPartition_->UpdateCellState(c.coord, CellLoadState::Unloaded);
         }
     }
@@ -282,7 +436,7 @@ void StreamingManager::LoadCell(const CellCoord& coord, float priority) {
     CellLoadRequest request;
     request.coord = coord;
     request.priority = priority;
-    request.frameIndex = currentFrame_;
+    request.frameIndex = static_cast<uint32_t>(currentFrame_);
 
     QueueCellLoad(request);
 }
@@ -294,7 +448,7 @@ void StreamingManager::UnloadCell(const CellCoord& coord) {
 
     CellUnloadRequest request;
     request.coord = coord;
-    request.frameIndex = currentFrame_;
+    request.frameIndex = static_cast<uint32_t>(currentFrame_);
 
     QueueCellUnload(request);
 }
@@ -352,7 +506,9 @@ std::vector<CellCoord> StreamingManager::GetCellsInRange(const Vec3& position, f
             Vec3 cellCenter = worldPartition_->CellToWorld(coord);
             Vec3 toCell = cellCenter - position;
             if (toCell.Dot(toCell) <= radiusSq) {
-                if (!availableCells_.empty() && availableCells_.find(coord) == availableCells_.end()) {
+                if (!config_.allowPlaceholderCellLoad &&
+                    !availableCells_.empty() &&
+                    availableCells_.find(coord) == availableCells_.end()) {
                     continue;
                 }
                 cells.push_back(coord);
@@ -524,6 +680,7 @@ void StreamingManager::LoadCellLayer(const CellCoord& coord, CellLayer layer, fl
     ld.size = 0;
     ld.state = CellLoadState::Loaded;
     cell->layers[layer] = ld;
+    cell->isPlaceholderData = true;
 }
 
 void StreamingManager::UnloadCellLayer(const CellCoord& coord, CellLayer layer) {
@@ -545,6 +702,24 @@ void StreamingManager::UnloadCellLayer(const CellCoord& coord, CellLayer layer) 
         memoryPool_->Free(it->second.data);
     }
     cell->layers.erase(it);
+}
+
+void StreamingManager::ReleaseCellLayers(CellData* cell) {
+    if (!cell) {
+        return;
+    }
+
+    for (auto& [layer, layerData] : cell->layers) {
+        (void)layer;
+        if (layerData.data && memoryPool_) {
+            memoryPool_->Free(layerData.data);
+        }
+        layerData.data = nullptr;
+        layerData.size = 0;
+        layerData.state = CellLoadState::Unloaded;
+    }
+
+    cell->layers.clear();
 }
 
 bool StreamingManager::IsCellLayerLoaded(const CellCoord& coord, CellLayer layer) const {
@@ -570,6 +745,7 @@ void StreamingManager::SetGlobalPriorityOverride(std::function<float(const CellC
 
 void StreamingManager::SetConfig(const StreamingManagerConfig& config) {
     config_ = config;
+    config_.cellDataDirectory = ResolveRuntimePath(std::filesystem::path(config.cellDataDirectory)).wstring();
 
     // Update sub-system configs
     WorldPartitionConfig partitionConfig;
@@ -706,6 +882,7 @@ void StreamingManager::Shutdown() {
 // ===== Private Methods =====
 
 void StreamingManager::UpdateStreaming(float deltaTime, const Vec3& cameraPosition, const Vec3& cameraDirection) {
+    (void)deltaTime;
     // If we're over budget, do not queue additional loads this frame. Let eviction catch up.
     if (GetMemoryUtilization() >= config_.evictionThreshold) {
         // Still allow distance-based unloads.
@@ -934,10 +1111,13 @@ void StreamingManager::ProcessCellLoad(const CellLoadRequest& request) {
 
         // Placeholder load: no actual IO.
         worldPartition_->UpdateCellState(request.coord, CellLoadState::Loading);
+        cell->isPlaceholderData = true;
         cell->metadata.memorySize = config_.placeholderCellSizeBytes;
         cell->metadata.dataSize = config_.placeholderCellSizeBytes;
         worldPartition_->UpdateCellState(request.coord, CellLoadState::Loaded);
         evictionPolicy_->RecordAccess(request.coord, currentFrame_);
+        NEXT_LOG_WARNING("Loaded placeholder cell for (%d,%d) because '%S' was missing",
+                         request.coord.x, request.coord.z, filePath.c_str());
         return;
     }
 
@@ -955,10 +1135,9 @@ void StreamingManager::ProcessCellLoad(const CellLoadRequest& request) {
         return;
     }
 
-    // Treat each cell file as an asset package (npkg-compatible). This makes streaming immediately useful
-    // with the existing asset pipeline while we iterate toward layered manifests + HLOD production tooling.
     const std::string pkgName = fsPath.stem().string();
     const std::string pkgPath = fsPath.u8string();
+    const bool packageBacked = IsPackageCellPath(fsPath);
 
     worldPartition_->UpdateCellState(request.coord, CellLoadState::Loading);
 
@@ -966,19 +1145,36 @@ void StreamingManager::ProcessCellLoad(const CellLoadRequest& request) {
     op.filePath = filePath;
     op.packageName = pkgName;
     op.fileBytes = fileSize;
+    op.packageBacked = packageBacked;
 
     auto& js = Next::JobSystem::Instance();
-    op.job = js.Submit([this, coord = request.coord, pkgName, pkgPath, fileSize]() {
-        bool ok = Next::AssetManager::Instance().LoadPackage(pkgPath);
-
+    op.job = js.Submit([this, coord = request.coord, pkgName, pkgPath, filePath, fileSize, packageBacked]() {
         CellOpCompletion c;
         c.coord = coord;
         c.isLoad = true;
-        c.success = ok;
+        c.packageBacked = packageBacked;
         c.packageName = pkgName;
         c.bytes = fileSize;
-        if (!ok) {
-            c.error = "LoadPackage failed";
+
+        if (packageBacked) {
+            c.success = Next::AssetManager::Instance().LoadPackage(pkgPath);
+            if (!c.success) {
+                c.error = "LoadPackage failed";
+            }
+        } else {
+            std::ifstream in(std::filesystem::path(filePath), std::ios::binary);
+            if (!in.good()) {
+                c.success = false;
+                c.error = "Failed to open raw cell file";
+            } else {
+                c.rawCellData.resize(static_cast<size_t>(fileSize));
+                in.read(reinterpret_cast<char*>(c.rawCellData.data()), static_cast<std::streamsize>(c.rawCellData.size()));
+                c.success = in.good() || static_cast<uint64_t>(in.gcount()) == fileSize;
+                if (!c.success) {
+                    c.rawCellData.clear();
+                    c.error = "Failed to read raw cell file";
+                }
+            }
         }
 
         std::lock_guard<std::mutex> lock(completionMutex_);
@@ -1003,14 +1199,11 @@ void StreamingManager::ProcessCellUnload(const CellUnloadRequest& request) {
 
     worldPartition_->RequestCellUnload(request.coord);
 
-    // Determine the backing package name (stored on load; fallback to naming convention).
+    // Only package-backed cells need AssetManager unload.
     std::string pkgName;
     auto itPkg = cellToPackageName_.find(request.coord);
     if (itPkg != cellToPackageName_.end()) {
         pkgName = itPkg->second;
-    } else {
-        const std::filesystem::path fsPath(GetCellFilePath(request.coord));
-        pkgName = fsPath.stem().string();
     }
 
     auto& js = Next::JobSystem::Instance();
@@ -1033,20 +1226,12 @@ void StreamingManager::ProcessCellUnload(const CellUnloadRequest& request) {
 }
 
 std::wstring StreamingManager::GetCellFilePath(const CellCoord& coord) const {
-    std::wstring dir = config_.cellDataDirectory;
-    if (!dir.empty()) {
-        const wchar_t last = dir.back();
-        if (last != L'/' && last != L'\\') {
-            dir.push_back(L'\\');
-        }
-    }
-
-    // Naming convention: cell_{x}_{z}<ext>
-    const std::wstring ext = config_.cellFileExtension.empty() ? L".ncell" : config_.cellFileExtension;
-    return dir + L"cell_" + std::to_wstring(coord.x) + L"_" + std::to_wstring(coord.z) + ext;
+    const std::filesystem::path root = ResolveRuntimePath(std::filesystem::path(config_.cellDataDirectory));
+    return ResolveCellFilePath(root, coord, config_.cellFileExtension).wstring();
 }
 
 void StreamingManager::OnCellLoadComplete(const CellCoord& coord, bool success, uint64_t bytesProcessed) {
+    (void)bytesProcessed;
     // Update cell state
     if (success) {
         worldPartition_->UpdateCellState(coord, CellLoadState::Loaded);
@@ -1184,19 +1369,28 @@ float StreamingManager::CalculateCellPriority(const CellCoord& coord, const Vec3
 }
 
 float StreamingManager::CalculateLayerPriority(CellLayer layer) const {
+    (void)layer;
     // TODO: Implement layer-specific priority calculation
     return 1.0f;
 }
 
 void StreamingManager::UpdateStatistics(float deltaTime) {
+    (void)deltaTime;
     // Update basic statistics
     stats_.loadedCells = 0;
     stats_.loadingCells = 0;
     stats_.queuedCells = static_cast<uint32_t>(loadQueue_.size());
+    stats_.placeholderCells = 0;
 
     auto loadedCells = worldPartition_->GetLoadedCells();
     stats_.loadedCells = static_cast<uint32_t>(loadedCells.size());
     stats_.loadingCells = static_cast<uint32_t>(activeLoadOperations_.size());
+    for (const CellCoord& coord : loadedCells) {
+        const CellData* cell = worldPartition_->GetCell(coord);
+        if (cell && cell->isPlaceholderData) {
+            stats_.placeholderCells++;
+        }
+    }
 
     // Update memory statistics
     UpdateMemoryStatistics();

@@ -2,6 +2,9 @@
 #include "next/foundation/logger.h"
 #include <windows.h>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
+#include <vector>
 
 namespace Next {
 
@@ -57,6 +60,68 @@ struct LightingBufferGPU {
     int numSpotLights;
     int padding[2];
 };
+
+std::filesystem::path GetExecutableDirectory() {
+    wchar_t path[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return {};
+    }
+
+    return std::filesystem::path(path).parent_path();
+}
+
+void PushUniquePath(std::vector<std::filesystem::path>& roots, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+
+    for (const auto& existing : roots) {
+        if (existing == path) {
+            return;
+        }
+    }
+    roots.push_back(path);
+}
+
+std::filesystem::path ResolveRuntimeAssetPath(const std::filesystem::path& relativePath) {
+    if (relativePath.empty() || relativePath.is_absolute()) {
+        return relativePath;
+    }
+
+    std::vector<std::filesystem::path> roots;
+    std::error_code ec;
+
+    PushUniquePath(roots, std::filesystem::current_path(ec));
+    std::filesystem::path exeDir = GetExecutableDirectory();
+    std::filesystem::path probe = exeDir;
+    for (int i = 0; i < 6 && !probe.empty(); ++i) {
+        PushUniquePath(roots, probe);
+        std::filesystem::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+
+    for (const auto& root : roots) {
+        const std::filesystem::path candidate = root / relativePath;
+        if (std::filesystem::exists(candidate, ec)) {
+            const std::filesystem::path absoluteCandidate = std::filesystem::absolute(candidate, ec);
+            return ec ? candidate : absoluteCandidate;
+        }
+    }
+
+    return relativePath;
+}
+
+std::string ResolveRuntimeAssetPathUtf8(const char* relativePath) {
+    return ResolveRuntimeAssetPath(std::filesystem::path(relativePath)).u8string();
+}
+
+std::wstring ResolveRuntimeAssetPathWide(const wchar_t* relativePath) {
+    return ResolveRuntimeAssetPath(std::filesystem::path(relativePath)).wstring();
+}
 } // namespace
 
 DX12Renderer::DX12Renderer()
@@ -535,13 +600,15 @@ bool DX12Renderer::CreatePipelineResources() {
         return false;
     }
 
-    if (!vertexShader_.LoadFromFile(&device_, "engine/renderer/shaders/cube.vs.hlsl")) {
-        NEXT_LOG_ERROR("Failed to load vertex shader");
+    const std::string cubeVertexShaderPath = ResolveRuntimeAssetPathUtf8("engine/renderer/shaders/cube.vs.hlsl");
+    if (!vertexShader_.LoadFromFile(&device_, cubeVertexShaderPath.c_str())) {
+        NEXT_LOG_ERROR("Failed to load vertex shader: %s", cubeVertexShaderPath.c_str());
         return false;
     }
 
-    if (!pixelShader_.LoadFromFile(&device_, "engine/renderer/shaders/cube.ps.hlsl")) {
-        NEXT_LOG_ERROR("Failed to load pixel shader");
+    const std::string cubePixelShaderPath = ResolveRuntimeAssetPathUtf8("engine/renderer/shaders/cube.ps.hlsl");
+    if (!pixelShader_.LoadFromFile(&device_, cubePixelShaderPath.c_str())) {
+        NEXT_LOG_ERROR("Failed to load pixel shader: %s", cubePixelShaderPath.c_str());
         return false;
     }
 
@@ -723,13 +790,14 @@ bool DX12Renderer::CreatePipelineResources() {
         return false;
     }
 
+    const std::wstring checkerboardTexturePath = ResolveRuntimeAssetPathWide(L"engine/renderer/textures/checkerboard.png");
     bool textureLoaded = texture_.LoadFromFile(
-        L"engine/renderer/textures/checkerboard.png",
+        checkerboardTexturePath.c_str(),
         commandQueue_.GetQueue(),
         pbrTextureAllocation_.cpuHandle);
 
     if (!textureLoaded) {
-        NEXT_LOG_WARNING("Failed to load texture file, will need to create one");
+        NEXT_LOG_WARNING("Failed to load texture file: %S", checkerboardTexturePath.c_str());
     } else {
         UINT descriptorSize = device_.GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         for (UINT i = 1; i < kPbrTextureSlots; ++i) {
@@ -838,13 +906,15 @@ bool DX12Renderer::CreatePBRResources() {
     lightingScene_.AddPointLight(pointLight);
 
     // Load PBR shaders (use simplified version for debugging)
-    if (!pbrVertexShader_.LoadFromFile(&device_, "engine/renderer/shaders/pbr.vs.hlsl")) {
-        NEXT_LOG_ERROR("Failed to load PBR vertex shader");
+    const std::string pbrVertexShaderPath = ResolveRuntimeAssetPathUtf8("engine/renderer/shaders/pbr.vs.hlsl");
+    if (!pbrVertexShader_.LoadFromFile(&device_, pbrVertexShaderPath.c_str())) {
+        NEXT_LOG_ERROR("Failed to load PBR vertex shader: %s", pbrVertexShaderPath.c_str());
         return false;
     }
 
-    if (!pbrPixelShader_.LoadFromFile(&device_, "engine/renderer/shaders/pbr.ps.hlsl")) {
-        NEXT_LOG_ERROR("Failed to load PBR pixel shader");
+    const std::string pbrPixelShaderPath = ResolveRuntimeAssetPathUtf8("engine/renderer/shaders/pbr.ps.hlsl");
+    if (!pbrPixelShader_.LoadFromFile(&device_, pbrPixelShaderPath.c_str())) {
+        NEXT_LOG_ERROR("Failed to load PBR pixel shader: %s", pbrPixelShaderPath.c_str());
         return false;
     }
 

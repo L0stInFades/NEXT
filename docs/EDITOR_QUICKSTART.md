@@ -1,10 +1,13 @@
 # Editor Quickstart
 
-当前提供一个可运行的编辑器骨架：ImGui Docking UI + DX12 Overlay，目标是尽快把“UE5 水平的开发体验”底座搭起来（面板、内容浏览、导入入口），再逐步深化成完整编辑器。
+`next_editor` 现在的定位是“可运行的内容工作台”，不是完整场景编辑器。当前已经打通：
+
+- ImGui Docking UI
+- Content Browser：扫描 `assets/*.npkg`、Load / Unload、查看资产列表与基础元信息
+- Import 面板：调用 `next_assetc import`
+- Viewport：显示 live backbuffer 输出
 
 ## 构建
-
-使用现有 `build` 目录即可：
 
 ```powershell
 cmake --build build --config Debug --target next_editor
@@ -12,53 +15,55 @@ cmake --build build --config Debug --target next_editor
 
 ## 运行
 
-渲染器会按相对路径加载着色器与资源，因此运行时工作目录建议是仓库根目录 `E:\NEXT`。
+编辑器已经不再依赖仓库根工作目录。下面两种方式都可以：
 
 ```powershell
-cd E:\NEXT
 .\build\bin\Debug\next_editor.exe
 ```
 
-编辑器菜单栏：
-- `Window` 可以重新打开 `Content/Import/Viewport/ImGui Demo` 面板
-- `Layout -> Reset Layout` 可一键恢复默认布局（面板卡住/收不回去时用）
+```powershell
+cd build
+.\bin\Debug\next_editor.exe
+```
 
-当前 Content/Import 处于“工具链连通”阶段：
-- `Content` 会显示 `assets/*.npkg`，并标注 `Loaded/Not loaded`
-- `Inspect` 后能看到包内资产列表；`Load Asset (Sync)` 会把资产加载到运行时 AssetManager（下一步再接 viewport 预览/拖拽进场景）
-- `Import` 会校验源文件是否存在，导入成功后会自动刷新 Content（可选自动 Load）
-
-可选参数（用于自动化/排查问题）：
+常用参数：
 
 ```powershell
-# 只跑渲染器（不初始化 ImGui）
-.\build\bin\Debug\next_editor.exe --no-imgui
-
-# 跑 N 帧后自动退出（CI/smoke test）
 .\build\bin\Debug\next_editor.exe --smoke-frames 300
-
-# 跑 N 秒后自动退出
 .\build\bin\Debug\next_editor.exe --smoke-seconds 3
+.\build\bin\Debug\next_editor.exe --no-imgui
+.\build\bin\Debug\next_editor.exe --load-package assets\test_package.npkg
 ```
 
-日志级别可通过环境变量控制（默认 Debug/Info 以上，Trace 需要显式开启）：
+菜单栏：
 
-```powershell
-$env:NEXT_LOG_LEVEL = "info"   # trace/debug/info/warn/error/fatal
-```
+- `Window`：重新打开 `Content / Import / Viewport / ImGui Demo`
+- `Layout -> Reset Layout`：恢复默认布局
 
-如果你用 Visual Studio 调试，已为 `next_editor` 设置 `VS_DEBUGGER_WORKING_DIRECTORY = repo root`。
+## Content Browser
 
-## 资产导入
+当前行为：
 
-编辑器里有 `Import` 面板，当前调用 `next_assetc import` 来执行导入（先支持 OBJ mesh-only）。
+- 扫描 `assets/*.npkg`
+- 显示 `Loaded / Not loaded` 和包引用计数
+- `Inspect` 后列出包内资产
+- 选中资产后显示类型、大小、header 级元信息
+- `Load Asset (Sync)` 会把资产加载到运行时 `AssetManager`
 
-也支持把文件直接拖进编辑器窗口：会自动把 `Import` 面板里的 Source/Output 路径填好（默认输出到 `assets/<name>.npkg`）。
+## Import
 
-也可以直接命令行：
+当前通过外部工具 `next_assetc import` 导入资源，先支持 OBJ mesh-only：
 
 ```powershell
 .\build\bin\Debug\next_assetc.exe import SourceAssets\tri.obj assets\tri_import.npkg
 ```
 
-导入后 `Content` 面板会自动扫描 `assets/*.npkg`，点击 `Load` 会加载包到运行时 AssetManager（后续会补：列出包内资产、预览、拖拽到场景等）。
+导入成功后：
+
+- Content Browser 会立即重新扫描 `assets`
+- 若勾选 `Auto-load after import`，会自动加载刚导入的包
+- 失败时保留上一次成功扫描结果，不会清空当前选择
+
+## Viewport
+
+当前 `Viewport` 面板显示的是渲染器 live backbuffer 输出。独立 render-to-texture 场景视口、gizmo、scene hierarchy 和拖拽入场景不在当前阶段交付范围内。

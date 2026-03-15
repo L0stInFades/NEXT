@@ -69,8 +69,11 @@ public:
     bool Initialize();
     void Shutdown();
 
-    ScriptID LoadScript(const std::string& scriptPath);
-    ScriptID LoadScriptFromString(const std::string& scriptName, const std::string& scriptContent);
+    ScriptID LoadScript(const std::string& scriptPath,
+                        const std::unordered_map<std::string, std::string>* parameters = nullptr);
+    ScriptID LoadScriptFromString(const std::string& scriptName,
+                                  const std::string& scriptContent,
+                                  const std::unordered_map<std::string, std::string>* parameters = nullptr);
     void UnloadScript(ScriptID scriptID);
     bool ReloadScript(ScriptID scriptID);
 
@@ -86,6 +89,7 @@ public:
     void ResetStats();
 
     const LuaVMConfig& GetConfig() const { return config_; }
+    bool IsStubMode() const { return L_ == nullptr; }
 
 private:
     void* L_;  // lua_State* (使用void*避免Lua依赖)
@@ -94,14 +98,23 @@ private:
     ScriptID nextScriptID_ = 1;
 
     struct ScriptInfo {
-        ScriptID id;
+        ScriptID id = 0;
         std::string name;
         std::string path;
         std::string content;
-        bool isValid;
+        std::unordered_map<std::string, std::string> parameters;
+        std::string lastError;
+        int environmentRef = -1;
+        bool isValid = false;
+        bool hasRuntimeError = false;
     };
 
     std::unordered_map<ScriptID, ScriptInfo> scripts_;
+    float currentDeltaTime_ = 0.0f;
+
+    void UpdateSharedBindings();
+    bool PrepareScriptEnvironment(ScriptInfo& script);
+    void ReleaseScriptEnvironment(ScriptInfo& script);
 };
 
 /**
@@ -227,7 +240,7 @@ private:
 
     void StartScript(ScriptComponent* script);
     void UpdateScript(ScriptComponent* script, float deltaTime);
-    void CallScriptCallback(ScriptComponent* script, const std::string& callbackName);
+    bool CallScriptCallback(ScriptComponent* script, const std::string& callbackName);
 
     bool LoadScript(ScriptComponent* script);
     void UnloadScript(ScriptComponent* script);

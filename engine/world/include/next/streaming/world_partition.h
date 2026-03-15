@@ -136,12 +136,14 @@ struct CellData {
 
     // Async operation handle
     uint64_t asyncOperationHandle;
+    bool isPlaceholderData;
 
     CellData()
         : state(CellLoadState::Unloaded)
         , priority(0.0f)
         , lastAccessFrame(0)
         , asyncOperationHandle(0)
+        , isPlaceholderData(false)
     {}
 
     bool IsLayerLoaded(CellLayer layer) const {

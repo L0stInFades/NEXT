@@ -76,3 +76,89 @@ TEST(TaskSystem, SaveLoadStateJson) {
     std::filesystem::remove(tmp);
 }
 
+TEST(TaskSystem, AutoSaveOnShutdownWritesState) {
+    using namespace Next;
+
+    World world;
+    auto& bus = EventBus::GetInstance();
+
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "next_task_autosave_test.json";
+    std::filesystem::remove(tmp);
+
+    TaskExecutorConfig cfg;
+    cfg.enableEventProcessing = false;
+    cfg.enableAutoSave = true;
+    cfg.autoSaveOnStateChange = true;
+    cfg.enableReplay = false;
+    cfg.autoSavePath = tmp.string();
+
+    {
+        TaskExecutor exec(&world, &bus, cfg);
+        exec.Initialize();
+
+        TaskDefinition def("task_autosave");
+        def.name = "Auto Save Task";
+        def.firstStepId = "step_1";
+        def.steps.push_back(TaskStep("step_1", "Persist me"));
+        exec.RegisterTaskDefinition(def);
+
+        const TaskDefinition* storedDef = exec.GetTaskDefinition("task_autosave");
+        ASSERT_NE(storedDef, nullptr);
+        ASSERT_NE(exec.StartTask(storedDef), nullptr);
+        exec.Shutdown();
+    }
+
+    ASSERT_TRUE(std::filesystem::exists(tmp));
+
+    TaskExecutorConfig loadCfg = cfg;
+    loadCfg.enableAutoSave = false;
+    TaskExecutor exec2(&world, &bus, loadCfg);
+    exec2.Initialize();
+
+    TaskDefinition def("task_autosave");
+    def.name = "Auto Save Task";
+    def.firstStepId = "step_1";
+    def.steps.push_back(TaskStep("step_1", "Persist me"));
+    exec2.RegisterTaskDefinition(def);
+
+    ASSERT_TRUE(exec2.LoadState(tmp.string()));
+    EXPECT_EQ(exec2.GetAllTasks().size(), 1u);
+
+    exec2.Shutdown();
+    std::filesystem::remove(tmp);
+}
+
+TEST(TaskSystem, SchedulerAutoAcceptsOnEvent) {
+    using namespace Next;
+
+    World world;
+    auto& bus = EventBus::GetInstance();
+
+    TaskExecutorConfig execCfg;
+    execCfg.enableEventProcessing = true;
+    execCfg.enableAutoSave = false;
+    execCfg.enableReplay = false;
+
+    TaskExecutor exec(&world, &bus, execCfg);
+    exec.Initialize();
+
+    TaskDefinition def("task_event");
+    def.name = "Event Task";
+    def.autoAccept = true;
+    def.subscribedEvents.push_back("quest.triggered");
+    def.firstStepId = "step_1";
+    def.steps.push_back(TaskStep("step_1", "Wait"));
+    exec.RegisterTaskDefinition(def);
+
+    TaskScheduler scheduler(&exec);
+    scheduler.Initialize();
+    scheduler.ProcessEvent("quest.triggered", nullptr);
+
+    auto tasks = exec.GetAllTasks();
+    ASSERT_EQ(tasks.size(), 1u);
+    ASSERT_NE(tasks[0], nullptr);
+    EXPECT_EQ(tasks[0]->definition->id, "task_event");
+
+    scheduler.Shutdown();
+    exec.Shutdown();
+}

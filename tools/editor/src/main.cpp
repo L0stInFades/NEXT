@@ -38,7 +38,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -121,14 +123,64 @@ static void ImGuiSrvFree(ImGui_ImplDX12_InitInfo* info,
     LeaveCriticalSection(&alloc->lock);
 }
 
-std::string GetExeDir() {
+std::filesystem::path GetExeDir() {
     char path[MAX_PATH] = {};
     DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
     if (len == 0 || len >= MAX_PATH) {
         return {};
     }
     std::filesystem::path p(path);
-    return p.parent_path().string();
+    return p.parent_path();
+}
+
+void PushUniquePath(std::vector<std::filesystem::path>& roots, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+
+    for (const auto& existing : roots) {
+        if (existing == path) {
+            return;
+        }
+    }
+
+    roots.push_back(path);
+}
+
+std::filesystem::path ResolveRuntimePath(const std::filesystem::path& path) {
+    if (path.empty() || path.is_absolute()) {
+        return path;
+    }
+
+    std::error_code ec;
+    std::vector<std::filesystem::path> roots;
+    PushUniquePath(roots, std::filesystem::current_path(ec));
+
+    std::filesystem::path probe = GetExeDir();
+    for (int i = 0; i < 6 && !probe.empty(); ++i) {
+        PushUniquePath(roots, probe);
+        const std::filesystem::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+
+    std::filesystem::path fallback;
+    for (const auto& root : roots) {
+        const std::filesystem::path candidate = root / path;
+        if (fallback.empty()) {
+            const std::filesystem::path absoluteCandidate = std::filesystem::absolute(candidate, ec);
+            fallback = ec ? candidate : absoluteCandidate;
+        }
+
+        if (std::filesystem::exists(candidate, ec)) {
+            const std::filesystem::path absoluteCandidate = std::filesystem::absolute(candidate, ec);
+            return ec ? candidate : absoluteCandidate;
+        }
+    }
+
+    return fallback.empty() ? path : fallback;
 }
 
 std::string GetLocalAppDataDir() {
@@ -154,6 +206,42 @@ std::vector<std::filesystem::path> ScanPackages(const std::filesystem::path& ass
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+std::string FormatByteSize(uint64_t bytes) {
+    static constexpr const char* kUnits[] = {"B", "KB", "MB", "GB"};
+    double value = static_cast<double>(bytes);
+    size_t unit = 0;
+    while (value >= 1024.0 && unit + 1 < 4) {
+        value /= 1024.0;
+        ++unit;
+    }
+
+    char buffer[64] = {};
+    if (unit == 0) {
+        std::snprintf(buffer, sizeof(buffer), "%llu %s",
+                      static_cast<unsigned long long>(bytes), kUnits[unit]);
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "%.2f %s", value, kUnits[unit]);
+    }
+    return buffer;
+}
+
+template <typename T>
+bool ReadTypedAssetHeader(const std::shared_ptr<Next::PackageContainer>& package,
+                          const std::string& assetName,
+                          T& outHeader) {
+    if (!package) {
+        return false;
+    }
+
+    std::vector<uint8_t> assetData;
+    if (!package->ReadAssetData(assetName, assetData) || assetData.size() < sizeof(T)) {
+        return false;
+    }
+
+    std::memcpy(&outHeader, assetData.data(), sizeof(T));
+    return true;
 }
 
 } // namespace
@@ -243,7 +331,7 @@ int main(int argc, char* argv[]) {
     }
 
     for (const std::string& p : packagesToLoad) {
-        assetManager.LoadPackage(p);
+        assetManager.LoadPackage(ResolveRuntimePath(std::filesystem::path(p)).string());
     }
 
     auto* dx12 = static_cast<Next::DX12Renderer*>(renderer);
@@ -399,8 +487,12 @@ int main(int argc, char* argv[]) {
     std::string selectedPackageName;
     std::string selectedAssetName;
 
-    char importSrc[512] = "SourceAssets\\tri.obj";
-    char importDst[512] = "assets\\tri_import.npkg";
+    const std::filesystem::path resolvedImportSrc = ResolveRuntimePath("SourceAssets/tri.obj");
+    const std::filesystem::path resolvedImportDst = ResolveRuntimePath("assets/tri_import.npkg");
+    char importSrc[512] = {};
+    char importDst[512] = {};
+    std::snprintf(importSrc, sizeof(importSrc), "%s", resolvedImportSrc.string().c_str());
+    std::snprintf(importDst, sizeof(importDst), "%s", resolvedImportDst.string().c_str());
     int lastImportCode = 0;
     bool lastImportOk = false;
     bool importAutoLoad = true;
@@ -422,7 +514,7 @@ int main(int argc, char* argv[]) {
             if (DragQueryFileA(drop, 0, path, MAX_PATH) > 0) {
                 std::snprintf(importSrc, sizeof(importSrc), "%s", path);
                 std::filesystem::path srcPath(path);
-                std::filesystem::path dstPath = std::filesystem::path("assets") / (srcPath.stem().string() + ".npkg");
+                std::filesystem::path dstPath = ResolveRuntimePath("assets") / (srcPath.stem().string() + ".npkg");
                 std::snprintf(importDst, sizeof(importDst), "%s", dstPath.string().c_str());
                 lastImportCode = 0;
                 NEXT_LOG_INFO("Dropped file: %s", path);
@@ -445,7 +537,7 @@ int main(int argc, char* argv[]) {
         return false;
     });
 
-    std::filesystem::path assetsDir = std::filesystem::current_path() / "assets";
+    std::filesystem::path assetsDir = ResolveRuntimePath("assets");
     auto packages = ScanPackages(assetsDir);
     double lastScanTime = Next::GetTimeInSeconds();
 
@@ -623,6 +715,12 @@ int main(int argc, char* argv[]) {
                         ImGui::TextDisabled("Not loaded. Select the package row and click Load.");
                     } else {
                         ImGui::Text("Assets: %u", pkg->GetAssetCount());
+                        ImGui::TextWrapped("Package path: %s", pkg->GetFilePath().c_str());
+                        ImGui::Text("Package ref count: %u", assetManager.GetPackageRefCount(selectedPackageName));
+                        ImGui::Text("Mesh / Texture / Material: %zu / %zu / %zu",
+                                    pkg->GetAssetsByType(Next::AssetType::Mesh).size(),
+                                    pkg->GetAssetsByType(Next::AssetType::Texture).size(),
+                                    pkg->GetAssetsByType(Next::AssetType::Material).size());
                         ImGui::BeginChild("##asset_list", ImVec2(0, 180), true);
                         auto names = pkg->GetAssetNames();
                         for (const std::string& name : names) {
@@ -639,7 +737,59 @@ int main(int argc, char* argv[]) {
                         ImGui::EndChild();
 
                          if (!selectedAssetName.empty()) {
+                             const Next::AssetEntry* entry = pkg->GetAssetEntry(selectedAssetName);
+                             ImGui::Separator();
                              ImGui::Text("Selected asset: %s", selectedAssetName.c_str());
+                             if (entry) {
+                                ImGui::Text("Type: %s", Next::AssetTypeToString(entry->assetType));
+                                ImGui::Text("Stored size: %s", FormatByteSize(entry->assetSize).c_str());
+                                if (entry->compressedSize > 0) {
+                                    ImGui::Text("Compressed size: %s", FormatByteSize(entry->compressedSize).c_str());
+                                    ImGui::Text("Decompressed size: %s",
+                                                FormatByteSize(entry->decompressedSize).c_str());
+                                }
+
+                                Next::AssetHeader header = {};
+                                if (pkg->ReadAssetHeader(selectedAssetName, header)) {
+                                    ImGui::Text("Header payload: %s", FormatByteSize(header.dataSize).c_str());
+                                    ImGui::Text("Checksum: 0x%llX",
+                                                static_cast<unsigned long long>(header.checksum));
+                                }
+
+                                switch (entry->assetType) {
+                                case Next::AssetType::Mesh: {
+                                    Next::MeshHeader meshHeader = {};
+                                    if (ReadTypedAssetHeader(pkg, selectedAssetName, meshHeader)) {
+                                        ImGui::Text("Vertices: %u", meshHeader.vertexCount);
+                                        ImGui::Text("Indices: %u", meshHeader.indexCount);
+                                        ImGui::Text("Vertex stride: %u bytes", meshHeader.vertexStride);
+                                        ImGui::Text("Submeshes: %u", meshHeader.materialCount);
+                                    }
+                                    break;
+                                }
+                                case Next::AssetType::Texture: {
+                                    Next::TextureHeader textureHeader = {};
+                                    if (ReadTypedAssetHeader(pkg, selectedAssetName, textureHeader)) {
+                                        ImGui::Text("Dimensions: %ux%u", textureHeader.width, textureHeader.height);
+                                        ImGui::Text("Mip levels: %u", textureHeader.mipLevels);
+                                        ImGui::Text("Format: %u", textureHeader.format);
+                                    }
+                                    break;
+                                }
+                                case Next::AssetType::Material: {
+                                    Next::MaterialHeader materialHeader = {};
+                                    if (ReadTypedAssetHeader(pkg, selectedAssetName, materialHeader)) {
+                                        ImGui::Text("Textures: %u", materialHeader.textureCount);
+                                        ImGui::Text("Parameters: %u", materialHeader.parameterCount);
+                                        ImGui::Text("Shader ID: %u", materialHeader.shaderID);
+                                    }
+                                    break;
+                                }
+                                default:
+                                    break;
+                                }
+                             }
+
                              if (ImGui::Button("Load Asset (Sync)")) {
                                 const std::string qualified = selectedPackageName + "::" + selectedAssetName;
                                 Next::AssetHandle h = assetManager.LoadAssetSync(qualified);
@@ -675,8 +825,8 @@ int main(int argc, char* argv[]) {
                             std::filesystem::create_directories(dst.parent_path(), ec);
                         }
 
-                        const std::string exeDir = GetExeDir();
-                        const std::filesystem::path assetcExe = std::filesystem::path(exeDir) / "next_assetc.exe";
+                        const std::filesystem::path exeDir = GetExeDir();
+                        const std::filesystem::path assetcExe = exeDir / "next_assetc.exe";
                         const std::string assetc = std::filesystem::exists(assetcExe) ? assetcExe.string() : "next_assetc.exe";
 
                         const std::string cmd =
@@ -711,10 +861,11 @@ int main(int argc, char* argv[]) {
                 ImGui::End();
             }
 
-            // Viewport placeholder
+            // Viewport status
             if (showViewport) {
                 ImGui::Begin("Viewport", &showViewport);
-                ImGui::TextDisabled("Renderer output is the backbuffer (ImGui overlay).");
+                ImGui::TextDisabled("Viewport shows the renderer's live backbuffer output.");
+                ImGui::TextDisabled("Scene rendering still goes through the main swapchain.");
                 ImGui::Text("Window: %dx%d", window->GetWidth(), window->GetHeight());
                 if (ioPtr) {
                     ImGui::Text("FPS: %.1f", ioPtr->Framerate);
