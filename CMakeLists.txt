@@ -28,6 +28,8 @@ endif()
 option(BUILD_RENDERER "Build the current DX12 renderer path" ${NEXT_DEFAULT_BUILD_RENDERER})
 option(BUILD_EDITOR "Build the editor tool" ON)
 option(BUILD_TERMINAL "Build Neovim terminal/editor integration" ON)
+option(BUILD_OPS "Build real-code gameplay Ops modules" ON)
+option(BUILD_HACKOPS "Build the HackOps headless game target" ON)
 
 # Output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -63,6 +65,9 @@ endif()
 if(BUILD_TERMINAL)
     add_subdirectory(engine/terminal)
 endif()
+if(BUILD_OPS)
+    add_subdirectory(engine/ops)
+endif()
 
 # Optional modules
 add_subdirectory(engine/world)     # CP7: World Streaming
@@ -93,6 +98,13 @@ if(BUILD_GAME)
         add_subdirectory(game/song)
     else()
         message(STATUS "Skipping song_demo: requires BUILD_RENDERER=ON")
+    endif()
+endif()
+if(BUILD_HACKOPS)
+    if(BUILD_OPS)
+        add_subdirectory(game/hackops)
+    else()
+        message(STATUS "Skipping hackops_demo: requires BUILD_OPS=ON")
     endif()
 endif()
 

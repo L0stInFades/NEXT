@@ -12,7 +12,9 @@
         "BUILD_EDITOR": "OFF",
         "BUILD_GAME": "OFF",
         "BUILD_TESTS": "OFF",
-        "BUILD_TERMINAL": "ON"
+        "BUILD_TERMINAL": "ON",
+        "BUILD_OPS": "ON",
+        "BUILD_HACKOPS": "ON"
       }
     },
     {
@@ -27,7 +29,9 @@
         "BUILD_EDITOR": "ON",
         "BUILD_GAME": "ON",
         "BUILD_TESTS": "ON",
-        "BUILD_TERMINAL": "ON"
+        "BUILD_TERMINAL": "ON",
+        "BUILD_OPS": "ON",
+        "BUILD_HACKOPS": "ON"
       }
     }
   ],
@@ -36,7 +40,8 @@
       "name": "terminal-dev",
       "configurePreset": "terminal-dev",
       "targets": [
-        "next_nvim_surface_probe"
+        "next_nvim_surface_probe",
+        "hackops_demo"
       ]
     },
     {
