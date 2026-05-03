@@ -29,6 +29,11 @@ out/build/terminal-dev/bin/next_nvim_surface_probe \
   --clean \
   --file tools/nvim_surface_probe/sample_policy.py \
   --snapshot /tmp/nvim-surface-cpp.txt
+out/build/terminal-dev/bin/hackops_demo \
+  --reset \
+  --workspace /tmp/next-hackops-maintenance-window \
+  --snapshot smoke \
+  --list
 ```
 
 详细说明见 `docs/HACKOPS_DEV_QUICKSTART.md`。

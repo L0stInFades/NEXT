@@ -32,6 +32,16 @@ The `--clean` flag keeps CI and new developer machines independent from a
 personal LazyVim setup. Omit it locally when validating the real user
 configuration.
 
+Run the HackOps headless workspace smoke:
+
+```bash
+out/build/terminal-dev/bin/hackops_demo \
+  --reset \
+  --workspace /tmp/next-hackops-maintenance-window \
+  --snapshot smoke \
+  --list
+```
+
 ## Windows Song / Editor Track
 
 The existing song/editor track is still Windows/DX12-first:
@@ -45,6 +55,8 @@ ctest --test-dir out/build/windows-dx12-dev -C Debug --output-on-failure
 ## Current Module Boundary
 
 - `engine/terminal`: real Neovim external UI integration.
+- `engine/ops`: controlled workspaces for real-code gameplay.
+- `game/hackops`: headless HackOps target for development and CI.
 - `tools/nvim_surface_cpp_probe`: command-line smoke test for `NvimSurface`.
 - `tools/nvim_surface_probe`: Python reference spike.
 - `docs/projects/hackops-tech-prep.md`: HackOps technical prep notes.

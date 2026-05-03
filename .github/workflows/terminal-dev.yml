@@ -43,3 +43,17 @@ jobs:
             --file tools/nvim_surface_probe/sample_policy.py \
             --snapshot /tmp/nvim-surface-ci.txt
           test -s /tmp/nvim-surface-ci.txt
+
+      - name: Run HackOps workspace smoke
+        run: |
+          out/build/terminal-dev/bin/hackops_demo \
+            --reset \
+            --workspace /tmp/next-hackops-ci \
+            --snapshot ci \
+            --list
+          test -f /tmp/next-hackops-ci/policy.py
+          test -f /tmp/next-hackops-ci/orders.log
+          test -f /tmp/next-hackops-ci/city_graph.json
+          test -d /tmp/next-hackops-ci/snapshots
+          cd /tmp/next-hackops-ci
+          python3 policy.py

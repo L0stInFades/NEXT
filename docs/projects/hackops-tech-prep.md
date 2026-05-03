@@ -50,6 +50,49 @@ Current limitations:
 - Main-grid text rendering works; floating grids, external cmdline UI,
   highlight/style tables, mouse, IME, and renderer integration are not complete.
 
+## Second Spike: OpsWorkspace
+
+The second executable research artifact is:
+
+```text
+engine/ops/
+game/hackops/
+```
+
+It validates the next product bet: HackOps needs a controlled player workspace
+owned by the engine, not raw access to arbitrary host directories.
+
+The workspace currently seeds:
+
+- `ops.toml`
+- `policy.py`
+- `orders.log`
+- `city_graph.json`
+- `README.md`
+
+The headless game target:
+
+```text
+hackops_demo
+```
+
+can reset the workspace, create a snapshot, and list task files without starting
+the renderer. This keeps the HackOps line buildable on macOS/Linux CI while the
+existing song/editor path remains Windows/DX12-first.
+
+Verified locally and in CI:
+
+- `cmake --preset terminal-dev`
+- `cmake --build --preset terminal-dev`
+- `hackops_demo --reset --workspace /tmp/next-hackops-ci --snapshot ci --list`
+
+Next steps:
+
+- Add `PythonWorker` to run `policy.py` in an isolated process.
+- Add `run_sim` to consume worker output and produce a route/risk result.
+- Feed the generated workspace into `NvimSurface` so the editor opens the actual
+  task files.
+
 ## Why This Matters
 
 If this path works, the production engine can use:
