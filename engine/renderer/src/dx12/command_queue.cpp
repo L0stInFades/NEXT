@@ -35,13 +35,18 @@ bool DX12CommandQueue::Initialize(DX12Device* device, D3D12_COMMAND_LIST_TYPE ty
     // Create fence for synchronization
     if (!fence_.Initialize(device, 0)) {
         NEXT_LOG_ERROR("Failed to initialize fence");
+        Shutdown();
         return false;
     }
 
     currentFenceValue_ = 0;
 
     // Get timestamp frequency
-    commandQueue_->GetTimestampFrequency(&timestampFrequency_);
+    hr = commandQueue_->GetTimestampFrequency(&timestampFrequency_);
+    if (FAILED(hr)) {
+        NEXT_LOG_WARNING("Failed to query command queue timestamp frequency: 0x%X", hr);
+        timestampFrequency_ = 0;
+    }
 
     initialized_ = true;
     NEXT_LOG_INFO("Command Queue initialized successfully with frame-in-flight support (%d frames)", MAX_FRAME_IN_FLIGHT);
@@ -49,24 +54,30 @@ bool DX12CommandQueue::Initialize(DX12Device* device, D3D12_COMMAND_LIST_TYPE ty
 }
 
 void DX12CommandQueue::Shutdown() {
-    if (!initialized_) {
+    if (!initialized_ && !commandQueue_) {
         return;
     }
 
     NEXT_LOG_INFO("Shutting down Command Queue...");
 
     // Wait for all operations to complete
-    Flush();
+    if (initialized_ && commandQueue_) {
+        Flush();
+    }
 
     fence_.Shutdown();
     commandQueue_.Reset();
+    currentFenceValue_ = 0;
+    timestampFrequency_ = 0;
+    memset(frameFenceValues_, 0, sizeof(frameFenceValues_));
+    frameIndex_ = 0;
 
     initialized_ = false;
     NEXT_LOG_INFO("Command Queue shutdown complete");
 }
 
 uint64_t DX12CommandQueue::ExecuteCommandList(ID3D12CommandList* commandList) {
-    if (!commandList || !initialized_) {
+    if (!commandList || !initialized_ || !commandQueue_) {
         return 0;
     }
 
@@ -75,6 +86,9 @@ uint64_t DX12CommandQueue::ExecuteCommandList(ID3D12CommandList* commandList) {
 
     // Signal fence (but don't wait yet)
     uint64_t fenceValue = fence_.Signal(commandQueue_.Get());
+    if (fenceValue == 0) {
+        return 0;
+    }
     currentFenceValue_ = fenceValue;
 
     return fenceValue;
@@ -133,12 +147,15 @@ void DX12CommandQueue::WaitForFrame(uint32_t frameIndex) {
 }
 
 void DX12CommandQueue::Flush() {
-    if (!initialized_) {
+    if (!initialized_ || !commandQueue_) {
         return;
     }
 
     // Signal and wait for fence
     uint64_t fenceValue = fence_.Signal(commandQueue_.Get());
+    if (fenceValue == 0) {
+        return;
+    }
     fence_.Wait(fenceValue);
 }
 

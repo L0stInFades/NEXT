@@ -1,6 +1,7 @@
 #pragma once
 
 #include "next/renderer/dx12/device.h"
+#include "next/renderer/dx12/descriptor_allocator.h"
 #include "next/renderer/dx12/descriptor_heap.h"
 #include "next/renderer/dx12/texture.h"
 #include "next/renderer/dx12/shader.h"
@@ -54,7 +55,7 @@ struct VXAOParameters {
     int coneDirections = 6;           // Number of cone directions
     float range = 1.0f;               // Tracing range
     float hardness = 1.0f;            // Edge hardness
-    bool enableVoxelization = true;   // Dynamic voxelization
+    bool enableVoxelization = false;  // Dynamic voxelization is owned by VXGI; VXAO uses depth cone tracing by default
 };
 
 //=============================================================================
@@ -66,8 +67,11 @@ public:
     virtual ~AmbientOcclusion() = default;
 
     // Initialize AO technique
-    virtual bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
-                           uint32_t width, uint32_t height) = 0;
+    virtual bool Initialize(DX12Device* device,
+                           DX12DescriptorHeap* srvHeap,
+                           DX12DescriptorHeapManager* heapManager,
+                           uint32_t width,
+                           uint32_t height) = 0;
 
     // Render AO (should output to a texture)
     virtual void Render(ID3D12GraphicsCommandList* commandList,
@@ -101,8 +105,11 @@ public:
     GTAO();
     ~GTAO() override;
 
-    bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
-                   uint32_t width, uint32_t height) override;
+    bool Initialize(DX12Device* device,
+                   DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
+                   uint32_t width,
+                   uint32_t height) override;
     void Render(ID3D12GraphicsCommandList* commandList,
                ID3D12Resource* depthBuffer,
                ID3D12Resource* normalBuffer,
@@ -124,18 +131,25 @@ private:
     bool CreateRootSignature();
     bool CreatePipelineStates();
     bool CreateResources();
+    bool UpdateDepthShaderResource(ID3D12Resource* depthBuffer);
+    bool UpdateFilterShaderResource(ID3D12Resource* filterInput);
+    bool UpdateConstants();
 
     // Rendering passes
-    void RenderGTAO(ID3D12GraphicsCommandList* commandList);
-    void ApplySpatialFilter(ID3D12GraphicsCommandList* commandList);
+    bool RenderGTAO(ID3D12GraphicsCommandList* commandList,
+                    ID3D12Resource* target,
+                    D3D12_CPU_DESCRIPTOR_HANDLE targetRTV);
+    bool ApplySpatialFilter(ID3D12GraphicsCommandList* commandList);
 
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // Resources
     Microsoft::WRL::ComPtr<ID3D12Resource> aoTexture_;
     Microsoft::WRL::ComPtr<ID3D12Resource> aoTextureTemp_;
+    DX12RTVHeap rtvHeap_;
 
     // Pipeline
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
@@ -143,6 +157,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> filterPSO_;
 
     // Shaders
+    DX12VertexShader fullscreenVertexShader_;
     DX12PixelShader gtaoShader_;
     DX12PixelShader filterShader_;
 
@@ -155,8 +170,11 @@ private:
 
     // Parameters
     GTAOParameters params_;
+    DescriptorAllocation depthSrvAllocation_;
 
     bool initialized_;
+    bool renderEvidenceLogged_;
+    bool filterEvidenceLogged_;
 };
 
 //=============================================================================
@@ -169,8 +187,11 @@ public:
     HBAO();
     ~HBAO() override;
 
-    bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
-                   uint32_t width, uint32_t height) override;
+    bool Initialize(DX12Device* device,
+                   DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
+                   uint32_t width,
+                   uint32_t height) override;
     void Render(ID3D12GraphicsCommandList* commandList,
                ID3D12Resource* depthBuffer,
                ID3D12Resource* normalBuffer,
@@ -192,18 +213,25 @@ private:
     bool CreateRootSignature();
     bool CreatePipelineStates();
     bool CreateResources();
+    bool UpdateDepthShaderResource(ID3D12Resource* depthBuffer);
+    bool UpdateBlurShaderResource(ID3D12Resource* blurInput);
+    bool UpdateConstants();
 
     // Rendering passes
-    void RenderHBAO(ID3D12GraphicsCommandList* commandList);
-    void ApplyBlur(ID3D12GraphicsCommandList* commandList);
+    bool RenderHBAO(ID3D12GraphicsCommandList* commandList,
+                    ID3D12Resource* target,
+                    D3D12_CPU_DESCRIPTOR_HANDLE targetRTV);
+    bool ApplyBlur(ID3D12GraphicsCommandList* commandList);
 
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // Resources
     Microsoft::WRL::ComPtr<ID3D12Resource> aoTexture_;
     Microsoft::WRL::ComPtr<ID3D12Resource> aoTextureTemp_;
+    DX12RTVHeap rtvHeap_;
 
     // Pipeline
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
@@ -211,6 +239,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> blurPSO_;
 
     // Shaders
+    DX12VertexShader fullscreenVertexShader_;
     DX12PixelShader hbaoShader_;
     DX12PixelShader blurShader_;
 
@@ -223,8 +252,11 @@ private:
 
     // Parameters
     HBAOParameters params_;
+    DescriptorAllocation depthSrvAllocation_;
 
     bool initialized_;
+    bool renderEvidenceLogged_;
+    bool blurEvidenceLogged_;
 };
 
 //=============================================================================
@@ -237,8 +269,11 @@ public:
     VXAO();
     ~VXAO() override;
 
-    bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
-                   uint32_t width, uint32_t height) override;
+    bool Initialize(DX12Device* device,
+                   DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
+                   uint32_t width,
+                   uint32_t height) override;
     void Render(ID3D12GraphicsCommandList* commandList,
                ID3D12Resource* depthBuffer,
                ID3D12Resource* normalBuffer,
@@ -260,19 +295,23 @@ private:
     bool CreateRootSignature();
     bool CreatePipelineStates();
     bool CreateResources();
+    bool UpdateDepthShaderResource(ID3D12Resource* depthBuffer);
+    bool UpdateConstants();
 
     // Rendering passes
     void VoxelizeScene(ID3D12GraphicsCommandList* commandList);
-    void RenderVXAO(ID3D12GraphicsCommandList* commandList);
+    bool RenderVXAO(ID3D12GraphicsCommandList* commandList);
 
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // Resources
     Microsoft::WRL::ComPtr<ID3D12Resource> aoTexture_;
     Microsoft::WRL::ComPtr<ID3D12Resource> voxelTexture_;     // 3D voxel texture
     Microsoft::WRL::ComPtr<ID3D12Resource> voxelTextureTemp_; // For double-buffering
+    DX12RTVHeap rtvHeap_;
 
     // Pipeline
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
@@ -281,6 +320,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> voxelizationPSO_;
 
     // Shaders
+    DX12VertexShader fullscreenVertexShader_;
     DX12PixelShader vxaoShader_;
     DX12GeometryShader voxelizationShader_;
 
@@ -294,11 +334,14 @@ private:
 
     // Parameters
     VXAOParameters params_;
+    DescriptorAllocation depthSrvAllocation_;
 
     // UAVs for voxel access
     Microsoft::WRL::ComPtr<ID3D12Resource> voxelUAV_;
 
     bool initialized_;
+    bool renderEvidenceLogged_;
+    bool voxelizationUnavailableLogged_;
 };
 
 //=============================================================================
@@ -312,8 +355,11 @@ public:
     ~AmbientOcclusionManager();
 
     // Initialize AO manager
-    bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
-                   uint32_t width, uint32_t height);
+    bool Initialize(DX12Device* device,
+                   DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
+                   uint32_t width,
+                   uint32_t height);
 
     // Set AO type (re-initializes if needed)
     bool SetAOType(AOType type);
@@ -355,6 +401,7 @@ private:
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // AO technique instances
     GTAO* gtao_;

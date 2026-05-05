@@ -5,6 +5,10 @@ project(NEXTEngine
     LANGUAGES CXX
 )
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 # C++ Standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +18,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(WIN32)
     set(PLATFORM_WINDOWS ON)
     set(PLATFORM_NAME "Windows")
+elseif(APPLE)
+    set(PLATFORM_APPLE ON)
+    set(PLATFORM_NAME "macOS")
 endif()
 
 # Build options
@@ -21,11 +28,11 @@ option(BUILD_TOOLS "Build tools" ON)
 option(BUILD_GAME "Build game" ON)
 option(BUILD_TESTS "Build tests" ON)
 
-set(NEXT_DEFAULT_BUILD_RENDERER ON)
-if(NOT WIN32)
-    set(NEXT_DEFAULT_BUILD_RENDERER OFF)
+set(NEXT_DEFAULT_BUILD_RENDERER OFF)
+if(WIN32 OR APPLE)
+    set(NEXT_DEFAULT_BUILD_RENDERER ON)
 endif()
-option(BUILD_RENDERER "Build the current DX12 renderer path" ${NEXT_DEFAULT_BUILD_RENDERER})
+option(BUILD_RENDERER "Build the platform renderer backend" ${NEXT_DEFAULT_BUILD_RENDERER})
 option(BUILD_EDITOR "Build the editor tool" ON)
 option(BUILD_TERMINAL "Build Neovim terminal/editor integration" ON)
 

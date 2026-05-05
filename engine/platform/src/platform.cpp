@@ -1,49 +1,46 @@
 #include "next/platform/platform.h"
-#include <windows.h>
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <thread>
+
+#if defined(_WIN32)
+#include <windows.h>
 #include <dbghelp.h>
 #include <eh.h>
-#include <cstdio>
-#include <cstdarg>
-#include <cstring>
+#endif
 
 namespace Next {
 
-// Minimal local logging helpers to avoid higher-layer dependencies
-// This is the lowest-level logging before the logger system is initialized
-static void PlatformLog(const char* level, const char* format, ...) {
-    va_list args;
-    va_start(args, format);
-    
-    // Format the complete message
-    char buffer[1024];
+namespace {
+
+void PlatformLog(const char* level, const char* format, ...);
+
+#if defined(_WIN32)
+void LogWithPrefix(const char* level, const char* format, va_list args) {
+    char buffer[1024] = {};
     int prefixLen = snprintf(buffer, sizeof(buffer), "%s ", level);
     if (prefixLen > 0 && prefixLen < static_cast<int>(sizeof(buffer))) {
         vsnprintf(buffer + prefixLen, sizeof(buffer) - prefixLen, format, args);
     }
-    
-    // Add newline
+
     size_t len = strlen(buffer);
     if (len < sizeof(buffer) - 1) {
         buffer[len] = '\n';
         buffer[len + 1] = '\0';
     }
-    
-    // Output to debugger (Visual Studio Output window)
+
     OutputDebugStringA(buffer);
-    
-    // Also output to stderr as fallback
     fprintf(stderr, "%s", buffer);
     fflush(stderr);
-    
-    va_end(args);
 }
 
 // Windows exception filter for crash handling
 LONG WINAPI CrashHandler(EXCEPTION_POINTERS* exceptionInfo) {
     PlatformLog("[FATAL]", "=== CRASH DETECTED ===");
 
-    // Get exception code
     DWORD exceptionCode = exceptionInfo->ExceptionRecord->ExceptionCode;
     const char* exceptionName = "Unknown";
 
@@ -110,7 +107,7 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* exceptionInfo) {
             break;
     }
 
-    PlatformLog("[FATAL]", "Exception Code: 0x%08X (%s)", exceptionCode, exceptionName);
+    PlatformLog("[FATAL]", "Exception Code: 0x%08X (%s)", static_cast<unsigned int>(exceptionCode), exceptionName);
     PlatformLog("[FATAL]", "Exception Address: 0x%p", exceptionInfo->ExceptionRecord->ExceptionAddress);
 
     // Write mini dump if possible
@@ -128,12 +125,10 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* exceptionInfo) {
         mei.ExceptionPointers = exceptionInfo;
         mei.ClientPointers = FALSE;
 
-        MINIDUMP_TYPE dumpType = MiniDumpNormal;
-
         if (MiniDumpWriteDump(GetCurrentProcess(),
                              GetCurrentProcessId(),
                              hFile,
-                             dumpType,
+                             MiniDumpNormal,
                              &mei,
                              nullptr,
                              nullptr)) {
@@ -141,41 +136,67 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* exceptionInfo) {
         } else {
             PlatformLog("[ERROR]", "Failed to write mini dump");
         }
-
         CloseHandle(hFile);
     }
 
-    // Show crash dialog
     char message[512];
     snprintf(message, sizeof(message),
              "NEXT Engine has crashed!\n\nException: %s (0x%08X)\nA crash dump has been saved.",
-             exceptionName, exceptionCode);
+             exceptionName, static_cast<unsigned int>(exceptionCode));
     MessageBoxA(nullptr, message, "NEXT Engine - Fatal Error", MB_ICONERROR | MB_OK);
 
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+#else
+
+void LogWithPrefix(const char* level, const char* format, va_list args) {
+    char buffer[1024] = {};
+    int prefixLen = snprintf(buffer, sizeof(buffer), "%s ", level);
+    if (prefixLen > 0 && prefixLen < static_cast<int>(sizeof(buffer))) {
+        vsnprintf(buffer + prefixLen, sizeof(buffer) - prefixLen, format, args);
+    }
+
+    size_t len = strlen(buffer);
+    if (len < sizeof(buffer) - 1) {
+        buffer[len] = '\n';
+        buffer[len + 1] = '\0';
+    }
+    fprintf(stderr, "%s", buffer);
+    fflush(stderr);
+}
+
+#endif
+
+void PlatformLog(const char* level, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    LogWithPrefix(level, format, args);
+    va_end(args);
+}
+
+} // namespace
+
 bool PlatformInitialize() {
+#if defined(_WIN32)
     // Set up crash handler
     SetUnhandledExceptionFilter(CrashHandler);
-
-    // Set up pure virtual function call handler
     _set_purecall_handler([]() {
         PlatformLog("[FATAL]", "Pure virtual function call!");
         std::abort();
     });
-
-    // Set up invalid parameter handler
-    _set_invalid_parameter_handler([](const wchar_t* expression,
-                                       const wchar_t* function,
-                                       const wchar_t* file,
-                                       unsigned int line,
-                                       uintptr_t reserved) {
+    _set_invalid_parameter_handler([](const wchar_t*,
+                                     const wchar_t*,
+                                     const wchar_t*,
+                                     unsigned int,
+                                     uintptr_t) {
         PlatformLog("[FATAL]", "Invalid parameter detected");
         std::abort();
     });
-
     PlatformLog("[INFO]", "Platform crash handlers initialized");
+#else
+    PlatformLog("[INFO]", "Platform initialization completed (non-Windows)");
+#endif
     return true;
 }
 
@@ -184,7 +205,13 @@ void PlatformShutdown() {
 }
 
 const char* GetPlatformName() {
+#if defined(_WIN32)
     return "Windows";
+#elif defined(__APPLE__)
+    return "macOS";
+#else
+    return "Unknown";
+#endif
 }
 
 double GetTimeInSeconds() {
@@ -194,7 +221,11 @@ double GetTimeInSeconds() {
 }
 
 void SleepMs(uint32_t milliseconds) {
+#if defined(_WIN32)
     Sleep(milliseconds);
+#else
+    std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+#endif
 }
 
 } // namespace Next

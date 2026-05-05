@@ -22,6 +22,13 @@ bool DX12Buffer::Initialize(
         return false;
     }
 
+    if (size == 0) {
+        NEXT_LOG_ERROR("Invalid buffer size: 0");
+        return false;
+    }
+
+    Shutdown();
+
     NEXT_LOG_DEBUG("Creating buffer (%zu bytes, Heap Type: %d)", size, heapType);
 
     size_ = size;
@@ -80,6 +87,11 @@ bool DX12Buffer::UploadData(const void* data, size_t size) {
         return false;
     }
 
+    if (!data || size == 0) {
+        NEXT_LOG_ERROR("Invalid buffer upload data");
+        return false;
+    }
+
     if (size > size_) {
         NEXT_LOG_ERROR("Data size (%zu) exceeds buffer size (%zu)", size, size_);
         return false;
@@ -114,6 +126,10 @@ void DX12Buffer::Shutdown() {
 
 D3D12_VERTEX_BUFFER_VIEW DX12Buffer::GetVertexBufferView(UINT stride) const {
     D3D12_VERTEX_BUFFER_VIEW vbv = {};
+    if (!resource_ || stride == 0) {
+        return vbv;
+    }
+
     vbv.BufferLocation = resource_->GetGPUVirtualAddress();
     vbv.SizeInBytes = (UINT)size_;
     vbv.StrideInBytes = stride;
@@ -122,6 +138,10 @@ D3D12_VERTEX_BUFFER_VIEW DX12Buffer::GetVertexBufferView(UINT stride) const {
 
 D3D12_INDEX_BUFFER_VIEW DX12Buffer::GetIndexBufferView(DXGI_FORMAT format) const {
     D3D12_INDEX_BUFFER_VIEW ibv = {};
+    if (!resource_) {
+        return ibv;
+    }
+
     ibv.BufferLocation = resource_->GetGPUVirtualAddress();
     ibv.SizeInBytes = (UINT)size_;
     ibv.Format = format;

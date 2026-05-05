@@ -5,6 +5,7 @@
 #include "next/renderer/dx12/shader.h"
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <cstdint>
 #include <vector>
 
 namespace Next {
@@ -30,8 +31,8 @@ public:
     bool LoadShaders(const char* amplificationShaderPath, const char* meshShaderPath,
                      const char* pixelShaderPath);
 
-    // Create pipeline state
-    bool CreatePipelineState(ID3D12RootSignature* rootSignature);
+    // Create pipeline state. If no root signature is supplied, the pass creates an empty one.
+    bool CreatePipelineState(ID3D12RootSignature* rootSignature = nullptr);
 
     // Render with mesh shaders
     void Render(ID3D12GraphicsCommandList* commandList, uint32_t instanceCount);
@@ -45,6 +46,8 @@ public:
     bool IsInitialized() const { return initialized_; }
 
 private:
+    bool CreateDefaultRootSignature();
+
     DX12Device* device_;
 
     // Shaders
@@ -53,9 +56,12 @@ private:
     DX12Shader* pixelShader_;
 
     // Pipeline state
+    ID3D12RootSignature* rootSignature_;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> ownedRootSignature_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineState_;
 
     bool initialized_;
+    bool dispatchEvidenceLogged_;
 };
 
 } // namespace Next

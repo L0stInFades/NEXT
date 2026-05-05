@@ -6,8 +6,74 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cstdlib>
 
 namespace Next {
+
+namespace {
+
+std::wstring Utf8ToWide(const std::string& text) {
+    if (text.empty()) {
+        return {};
+    }
+
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (length <= 0) {
+        return std::wstring(text.begin(), text.end());
+    }
+
+    std::wstring wide(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), length);
+    if (!wide.empty() && wide.back() == L'\0') {
+        wide.pop_back();
+    }
+    return wide;
+}
+
+bool TargetRequiresDXC(const std::string& targetProfile) {
+    return targetProfile.find("_6_") != std::string::npos ||
+           targetProfile.rfind("as_", 0) == 0 ||
+           targetProfile.rfind("ms_", 0) == 0 ||
+           targetProfile.rfind("lib_", 0) == 0;
+}
+
+void AddUniquePath(std::vector<std::string>& paths, const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    if (std::find(paths.begin(), paths.end(), path) == paths.end()) {
+        paths.push_back(path);
+    }
+}
+
+void AddWindowsSdkDxcPaths(std::vector<std::string>& paths) {
+    const char* programFilesX86 = std::getenv("ProgramFiles(x86)");
+    if (!programFilesX86) {
+        return;
+    }
+
+    const std::filesystem::path binRoot =
+        std::filesystem::path(programFilesX86) / "Windows Kits" / "10" / "bin";
+    if (!std::filesystem::exists(binRoot)) {
+        return;
+    }
+
+    std::vector<std::filesystem::path> versionDirs;
+    for (const auto& entry : std::filesystem::directory_iterator(binRoot)) {
+        if (entry.is_directory()) {
+            versionDirs.push_back(entry.path());
+        }
+    }
+    std::sort(versionDirs.begin(), versionDirs.end(), [](const auto& a, const auto& b) {
+        return a.filename().string() > b.filename().string();
+    });
+
+    for (const auto& versionDir : versionDirs) {
+        AddUniquePath(paths, (versionDir / "x64" / "dxcompiler.dll").string());
+    }
+}
+
+} // namespace
 
 //=============================================================================
 // Shader Compiler Implementation
@@ -20,7 +86,9 @@ ShaderCompiler::ShaderCompiler()
     , dxrAvailable_(false)
     , dxcModule_(nullptr)
     , fxcModule_(nullptr)
-    , DxcCompile(nullptr)
+#if NEXT_RENDERER_HAS_DXC
+    , DxcCreateInstance_(nullptr)
+#endif
     , pD3DCompile_(nullptr)
     , initialized_(false)
 {
@@ -35,7 +103,12 @@ bool ShaderCompiler::Initialize(const std::string& dxcPath, const std::string& f
     dxcPath_ = dxcPath;
     fxcPath_ = fxcPath;
 
-    // Try to load FXC (D3DCompiler)
+    if (LoadDXC()) {
+        NEXT_LOG_INFO("Using DXC for SM6 shader compilation");
+    } else {
+        NEXT_LOG_WARNING("DXC not available; SM6 shaders will not compile");
+    }
+
     if (LoadFXC()) {
         NEXT_LOG_INFO("Using FXC for shader compilation");
     } else {
@@ -52,38 +125,80 @@ bool ShaderCompiler::Initialize(const std::string& dxcPath, const std::string& f
 
 bool ShaderCompiler::LoadDXC()
 {
+#if !NEXT_RENDERER_HAS_DXC
+    NEXT_LOG_WARNING("DXC headers are unavailable in this Windows SDK");
+    return false;
+#else
     // Common paths to search for dxc.dll
-    std::vector<std::string> searchPaths = {
-        dxcPath_.empty() ? "dxc.dll" : dxcPath_,
-        "C:\\Windows\\System32\\dxc.dll",
-        "C:\\Windows\\SysWOW64\\dxc.dll",
-        "./third_party/dxc/bin/x64/dxc.dll",
-        "../bin/dxc.dll"
-    };
+    std::vector<std::string> searchPaths;
+    AddUniquePath(searchPaths, dxcPath_.empty() ? "dxcompiler.dll" : dxcPath_);
+    AddWindowsSdkDxcPaths(searchPaths);
+    AddUniquePath(searchPaths, "C:\\Windows\\System32\\dxcompiler.dll");
+    AddUniquePath(searchPaths, "C:\\Windows\\SysWOW64\\dxcompiler.dll");
+    AddUniquePath(searchPaths, "./third_party/dxc/bin/x64/dxcompiler.dll");
+    AddUniquePath(searchPaths, "../bin/dxcompiler.dll");
 
-    // Try to find DXC in standard locations or custom path
     for (const auto& path : searchPaths) {
-        if (std::filesystem::exists(path)) {
-            dxcPath_ = std::filesystem::canonical(path).string();
+        HMODULE module = LoadLibraryA(path.c_str());
+        if (module) {
+            dxcModule_ = module;
+            dxcPath_ = std::filesystem::exists(path)
+                ? std::filesystem::canonical(path).string()
+                : path;
             break;
         }
     }
 
-    if (!std::filesystem::exists(dxcPath_)) {
-        NEXT_LOG_WARNING("DXC not found at: %s", dxcPath_.c_str());
+    if (!dxcModule_) {
+        NEXT_LOG_WARNING("DXC not found");
         return false;
     }
 
-    // Load DXC
-    dxcModule_ = LoadLibraryA(dxcPath_.c_str());
-    if (!dxcModule_) {
-        NEXT_LOG_WARNING("Failed to load: %s", dxcPath_.c_str());
+    DxcCreateInstance_ = reinterpret_cast<DxcCreateInstanceProc>(
+        GetProcAddress(static_cast<HMODULE>(dxcModule_), "DxcCreateInstance")
+    );
+    if (!DxcCreateInstance_) {
+        NEXT_LOG_WARNING("DxcCreateInstance not found in: %s", dxcPath_.c_str());
+        FreeLibrary(static_cast<HMODULE>(dxcModule_));
+        dxcModule_ = nullptr;
+        DxcCreateInstance_ = nullptr;
+        return false;
+    }
+
+    HRESULT hr = DxcCreateInstance_(CLSID_DxcUtils, IID_PPV_ARGS(&dxcUtils_));
+    if (FAILED(hr)) {
+        NEXT_LOG_WARNING("Failed to create IDxcUtils: 0x%X", hr);
+        FreeLibrary(static_cast<HMODULE>(dxcModule_));
+        dxcModule_ = nullptr;
+        DxcCreateInstance_ = nullptr;
+        return false;
+    }
+
+    hr = DxcCreateInstance_(CLSID_DxcCompiler, IID_PPV_ARGS(&dxcCompiler_));
+    if (FAILED(hr)) {
+        NEXT_LOG_WARNING("Failed to create IDxcCompiler3: 0x%X", hr);
+        dxcUtils_.Reset();
+        FreeLibrary(static_cast<HMODULE>(dxcModule_));
+        dxcModule_ = nullptr;
+        DxcCreateInstance_ = nullptr;
+        return false;
+    }
+
+    hr = dxcUtils_->CreateDefaultIncludeHandler(&dxcIncludeHandler_);
+    if (FAILED(hr)) {
+        NEXT_LOG_WARNING("Failed to create DXC include handler: 0x%X", hr);
+        dxcCompiler_.Reset();
+        dxcUtils_.Reset();
+        FreeLibrary(static_cast<HMODULE>(dxcModule_));
+        dxcModule_ = nullptr;
+        DxcCreateInstance_ = nullptr;
         return false;
     }
 
     dxcAvailable_ = true;
     NEXT_LOG_INFO("Loaded DXC from: %s", dxcPath_.c_str());
     return true;
+#endif
 }
 
 bool ShaderCompiler::LoadFXC()
@@ -133,25 +248,119 @@ bool ShaderCompiler::LoadFXC()
     return true;
 }
 
-bool ShaderCompiler::CheckDXRSupport()
-{
-    // Check for DXR support by trying to get DXR device interface
-    // For now, assume DXR is available if DXC loaded successfully
-    return dxcAvailable_;
-}
-
 bool ShaderCompiler::CompileWithDXC(const ShaderCompileConfig& config,
                                  std::vector<uint8_t>& outBytecode)
 {
+#if !NEXT_RENDERER_HAS_DXC
+    NEXT_LOG_ERROR("DXC support was not compiled into this build");
+    return false;
+#else
     if (!dxcAvailable_) {
         NEXT_LOG_ERROR("DXC not available");
         return false;
     }
 
-    // DXC compilation requires dxcompiler.dll with proper IDxcCompiler interface
-    // For now, fall back to FXC which handles SM 5.1 shaders adequately
-    NEXT_LOG_INFO("DXC compilation requested, using FXC fallback for SM 5.1");
-    return CompileWithFXC(config, outBytecode);
+    std::vector<uint8_t> sourceCode;
+    {
+        std::ifstream file(config.sourceFile, std::ios::binary);
+        if (!file) {
+            NEXT_LOG_ERROR("Failed to open shader source: %s", config.sourceFile.c_str());
+            return false;
+        }
+
+        file.seekg(0, std::ios::end);
+        size_t fileSize = file.tellg();
+        file.seekg(0, std::ios::beg);
+
+        sourceCode.resize(fileSize);
+        file.read(reinterpret_cast<char*>(sourceCode.data()), fileSize);
+    }
+
+    DxcBuffer sourceBuffer = {};
+    sourceBuffer.Ptr = sourceCode.data();
+    sourceBuffer.Size = sourceCode.size();
+    sourceBuffer.Encoding = DXC_CP_UTF8;
+
+    std::vector<std::wstring> ownedArgs;
+    std::vector<LPCWSTR> args;
+    ownedArgs.reserve(12 + (config.includePaths.size() + config.defines.size()) * 2);
+    args.reserve(12 + (config.includePaths.size() + config.defines.size()) * 2);
+    auto addArg = [&](const std::wstring& value) {
+        ownedArgs.push_back(value);
+        args.push_back(ownedArgs.back().c_str());
+    };
+
+    addArg(Utf8ToWide(config.sourceFile));
+    if (config.targetProfile.rfind("lib_", 0) != 0) {
+        addArg(L"-E");
+        addArg(Utf8ToWide(config.entryPoint.empty() ? "main" : config.entryPoint));
+    }
+    addArg(L"-T");
+    addArg(Utf8ToWide(config.targetProfile.empty() ? "cs_6_0" : config.targetProfile));
+
+    if (config.debugInfo) {
+        addArg(L"-Zi");
+        addArg(L"-Qembed_debug");
+    }
+    if (config.optimisationLevel0) {
+        addArg(L"-Od");
+    } else if (config.optimisationLevel3) {
+        addArg(L"-O3");
+    }
+    if (config.warningsAsErrors) {
+        addArg(L"-WX");
+    }
+
+    for (const auto& includePath : config.includePaths) {
+        addArg(L"-I");
+        addArg(Utf8ToWide(includePath));
+    }
+    for (const auto& define : config.defines) {
+        addArg(L"-D");
+        addArg(Utf8ToWide(define));
+    }
+
+    Microsoft::WRL::ComPtr<IDxcResult> result;
+    HRESULT hr = dxcCompiler_->Compile(
+        &sourceBuffer,
+        args.data(),
+        static_cast<UINT32>(args.size()),
+        dxcIncludeHandler_.Get(),
+        IID_PPV_ARGS(&result)
+    );
+    if (FAILED(hr) || !result) {
+        NEXT_LOG_ERROR("DXC failed to start compilation for %s: 0x%X", config.sourceFile.c_str(), hr);
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDxcBlobUtf8> errors;
+    result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
+    if (errors && errors->GetStringLength() > 0) {
+        NEXT_LOG_WARNING("DXC output for %s:\n%s", config.sourceFile.c_str(), errors->GetStringPointer());
+    }
+
+    HRESULT status = S_OK;
+    result->GetStatus(&status);
+    if (FAILED(status)) {
+        NEXT_LOG_ERROR("DXC compilation failed for %s: 0x%X", config.sourceFile.c_str(), status);
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDxcBlob> object;
+    result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&object), nullptr);
+    if (!object || object->GetBufferSize() == 0) {
+        NEXT_LOG_ERROR("DXC produced no bytecode for %s", config.sourceFile.c_str());
+        return false;
+    }
+
+    const auto* begin = static_cast<const uint8_t*>(object->GetBufferPointer());
+    outBytecode.assign(begin, begin + object->GetBufferSize());
+    NEXT_LOG_INFO("Compiled shader: %s with DXC (%s, %zu bytes)",
+                  config.sourceFile.c_str(),
+                  config.targetProfile.c_str(),
+                  outBytecode.size());
+    return true;
+#endif
 }
 
 bool ShaderCompiler::CompileWithFXC(const ShaderCompileConfig& config,
@@ -234,10 +443,19 @@ bool ShaderCompiler::CompileWithFXC(const ShaderCompileConfig& config,
 bool ShaderCompiler::CompileWithBestAvailable(const ShaderCompileConfig& config,
                                          std::vector<uint8_t>& outBytecode)
 {
-    // Try DXC first (supports newer HLSL features)
+    const bool requiresDXC = TargetRequiresDXC(config.targetProfile);
+    if (requiresDXC && !dxcAvailable_) {
+        NEXT_LOG_ERROR("Shader target %s requires DXC, but DXC is not available",
+                       config.targetProfile.c_str());
+        return false;
+    }
+
     if (dxcAvailable_) {
         if (CompileWithDXC(config, outBytecode)) {
             return true;
+        }
+        if (requiresDXC) {
+            return false;
         }
     }
 
@@ -320,6 +538,14 @@ bool ShaderCompiler::ComputeShader(const std::string& hlslFile,
 
 void ShaderCompiler::Shutdown()
 {
+#if NEXT_RENDERER_HAS_DXC
+    dxcIncludeHandler_.Reset();
+    dxcCompiler_.Reset();
+    dxcUtils_.Reset();
+    DxcCreateInstance_ = nullptr;
+#endif
+    pD3DCompile_ = nullptr;
+
     if (dxcModule_) {
         FreeLibrary(static_cast<HMODULE>(dxcModule_));
         dxcModule_ = nullptr;
@@ -329,9 +555,6 @@ void ShaderCompiler::Shutdown()
         FreeLibrary(static_cast<HMODULE>(fxcModule_));
         fxcModule_ = nullptr;
     }
-
-    DxcCompile = nullptr;
-    pD3DCompile_ = nullptr;
 
     dxcAvailable_ = false;
     dxrAvailable_ = false;

@@ -2,6 +2,10 @@
 
 #include "next/renderer/dx12/device.h"
 #include "next/renderer/dx12/descriptor_heap.h"
+#include "next/renderer/dx12/constant_buffer.h"
+#include "next/renderer/dx12/pipeline_state.h"
+#include "next/renderer/dx12/root_signature.h"
+#include "next/renderer/dx12/shader.h"
 #include "next/renderer/math/math.h"
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -23,8 +27,13 @@ public:
     ~TemporalAA();
 
     // Initialize TAA
-    bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
-                    uint32_t width, uint32_t height);
+    bool Initialize(DX12Device* device,
+                    DX12DescriptorHeap* srvHeap,
+                    D3D12_CPU_DESCRIPTOR_HANDLE srvCPU,
+                    D3D12_GPU_DESCRIPTOR_HANDLE srvGPU,
+                    uint32_t width,
+                    uint32_t height,
+                    DXGI_FORMAT outputFormat = DXGI_FORMAT_R8G8B8A8_UNORM);
 
     // Update TAA history (call before rendering current frame)
     void UpdateHistory(ID3D12GraphicsCommandList* commandList,
@@ -34,7 +43,9 @@ public:
     // Apply TAA (call after rendering current frame)
     void Resolve(ID3D12GraphicsCommandList* commandList,
                  ID3D12Resource* currentFrame,
-                 ID3D12Resource* outputFrame);
+                 ID3D12Resource* outputFrame,
+                 D3D12_CPU_DESCRIPTOR_HANDLE outputRTV,
+                 ID3D12Resource* motionVectors = nullptr);
 
     // Resize (for window resize)
     bool Resize(uint32_t width, uint32_t height);
@@ -67,10 +78,23 @@ private:
     // Create resources
     bool CreateHistoryResources();
     bool CreateVelocityBuffer();
+    bool CreatePipelineResources(DXGI_FORMAT outputFormat);
+    bool UpdateShaderResources(ID3D12Resource* currentFrame, ID3D12Resource* motionVectors);
+    bool UpdateConstants(bool historyValid, bool velocityAvailable);
+    void CopyResolvedFrameToHistory(ID3D12GraphicsCommandList* commandList,
+                                    ID3D12Resource* outputFrame);
 
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCPU_;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGPU_;
+
+    DX12RootSignature rootSignature_;
+    DX12VertexShader vertexShader_;
+    DX12PixelShader pixelShader_;
+    DX12PipelineState pipelineState_;
+    DX12ConstantBuffer constantsBuffer_;
 
     // History buffers (double-buffered)
     Microsoft::WRL::ComPtr<ID3D12Resource> historyBuffer_[2];
@@ -85,9 +109,11 @@ private:
     // Dimensions
     uint32_t width_;
     uint32_t height_;
+    DXGI_FORMAT outputFormat_;
 
     // Current history index
     uint32_t historyIndex_;
+    bool historyValid_;
 
     // Parameters
     TAAParameters params_;

@@ -27,6 +27,13 @@ bool DX12DescriptorHeap::Initialize(
         return false;
     }
 
+    if (numDescriptors == 0) {
+        NEXT_LOG_ERROR("Descriptor heap must contain at least one descriptor");
+        return false;
+    }
+
+    Shutdown();
+
     NEXT_LOG_DEBUG("Initializing DX12 Descriptor Heap (Type: %d, Count: %u)", type, numDescriptors);
 
     // Fill heap description
@@ -43,6 +50,7 @@ bool DX12DescriptorHeap::Initialize(
 
     if (FAILED(hr)) {
         NEXT_LOG_ERROR("Failed to create descriptor heap: 0x%X", hr);
+        memset(&heapDesc_, 0, sizeof(heapDesc_));
         return false;
     }
 
@@ -57,6 +65,7 @@ bool DX12DescriptorHeap::Initialize(
 
 void DX12DescriptorHeap::Shutdown() {
     heap_.Reset();
+    memset(&heapDesc_, 0, sizeof(heapDesc_));
     descriptorSize_ = 0;
     numDescriptors_ = 0;
     initialized_ = false;
@@ -74,7 +83,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE DX12DescriptorHeap::GetCPUDescriptorHandle(UINT inde
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE DX12DescriptorHeap::GetGPUDescriptorHandle(UINT index) const {
-    if (!heap_ || index >= numDescriptors_) {
+    if (!heap_ || index >= numDescriptors_ || !IsShaderVisible()) {
         D3D12_GPU_DESCRIPTOR_HANDLE handle = {};
         return handle;
     }

@@ -24,12 +24,14 @@ bool DX12Device::Initialize() {
     // Create DXGI Factory
     if (!CreateDXGIFactory()) {
         NEXT_LOG_ERROR("Failed to create DXGI Factory");
+        Shutdown();
         return false;
     }
 
     // Create D3D12 Device
     if (!CreateDevice()) {
         NEXT_LOG_ERROR("Failed to create DX12 Device");
+        Shutdown();
         return false;
     }
 
@@ -43,7 +45,7 @@ bool DX12Device::Initialize() {
 }
 
 void DX12Device::Shutdown() {
-    if (!initialized_) {
+    if (!initialized_ && !device_ && !factory_ && !adapter_) {
         return;
     }
 
@@ -52,6 +54,7 @@ void DX12Device::Shutdown() {
     device_.Reset();
     factory_.Reset();
     adapter_.Reset();
+    features_ = {};
 
     initialized_ = false;
     NEXT_LOG_INFO("DX12 Device shutdown complete");
@@ -186,6 +189,7 @@ bool DX12Device::QueryFeatures() {
     D3D12_FEATURE_DATA_D3D12_OPTIONS7 options7 = {};
     if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7)))) {
         features_.meshShaders = options7.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+        features_.samplerFeedback = options7.SamplerFeedbackTier != D3D12_SAMPLER_FEEDBACK_TIER_NOT_SUPPORTED;
     }
 
     D3D12_FEATURE_DATA_D3D12_OPTIONS6 options6 = {};
@@ -214,11 +218,12 @@ bool DX12Device::QueryFeatures() {
         features_.featureLevel = static_cast<uint32_t>(levels.MaxSupportedFeatureLevel);
     }
 
-    NEXT_LOG_INFO("DX12 Features - FL 0x%X, Mesh: %s, RT: %s, VRS: %s, WorkGraphs: %s",
+    NEXT_LOG_INFO("DX12 Features - FL 0x%X, Mesh: %s, RT: %s, VRS: %s, SamplerFeedback: %s, WorkGraphs: %s",
                   features_.featureLevel,
                   features_.meshShaders ? "Yes" : "No",
                   features_.raytracing ? "Yes" : "No",
                   features_.variableShading ? "Yes" : "No",
+                  features_.samplerFeedback ? "Yes" : "No",
                   features_.workGraphs ? "Yes" : "No");
 
     return true;

@@ -18,6 +18,13 @@ bool DX12ConstantBuffer::Initialize(DX12Device* device, size_t size) {
         return false;
     }
 
+    if (size == 0) {
+        NEXT_LOG_ERROR("Invalid constant buffer size: 0");
+        return false;
+    }
+
+    Shutdown();
+
     // Align size to 256 bytes (D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)
     // Hardware requirement for constant buffers
     size_t alignedSize = (size + CONSTANT_BUFFER_ALIGNMENT - 1)
@@ -89,6 +96,11 @@ bool DX12ConstantBuffer::Initialize(DX12Device* device, size_t size) {
 bool DX12ConstantBuffer::UpdateData(const void* data, size_t size) {
     if (!initialized_ || !resource_) {
         NEXT_LOG_ERROR("Constant buffer not initialized");
+        return false;
+    }
+
+    if (!data || size == 0) {
+        NEXT_LOG_ERROR("Invalid constant buffer update data");
         return false;
     }
 

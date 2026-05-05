@@ -4,12 +4,14 @@
 
 struct VSInput {
     float3 position : POSITION;
-    float3 color : COLOR;
+    float4 color : COLOR;
+    float2 texcoord : TEXCOORD;
 };
 
 struct VSOutput {
     float4 position : SV_POSITION;
-    float3 color : COLOR;
+    float4 color : COLOR;
+    float2 texcoord : TEXCOORD;
 };
 
 // Constant buffer: MVP matrices (16-byte aligned)
@@ -33,6 +35,7 @@ VSOutput main(VSInput input) {
 
     output.position = clipPos;
     output.color = input.color;
+    output.texcoord = input.texcoord;
 
     return output;
 }

@@ -19,7 +19,10 @@ public:
     // Root Signature Access
     ID3D12RootSignature* GetRootSignature() const { return rootSignature_.Get(); }
     ID3D12RootSignature** GetAddressOf() { return rootSignature_.GetAddressOf(); }
-    void SetRootSignature(ID3D12RootSignature* rootSig) { rootSignature_ = rootSig; }
+    void SetRootSignature(ID3D12RootSignature* rootSig) {
+        rootSignature_ = rootSig;
+        initialized_ = rootSig != nullptr;
+    }
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;

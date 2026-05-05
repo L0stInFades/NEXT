@@ -46,7 +46,10 @@ public:
         DX12Shader* pixelShader,
         const std::vector<InputElementDesc>& inputLayout,
         DXGI_FORMAT renderTargetFormat,
-        D3D12_PRIMITIVE_TOPOLOGY_TYPE primitiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE primitiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        D3D12_FILL_MODE fillMode = D3D12_FILL_MODE_SOLID,
+        bool depthEnable = false,
+        DXGI_FORMAT depthStencilFormat = DXGI_FORMAT_D32_FLOAT);
 
     void Shutdown();
 

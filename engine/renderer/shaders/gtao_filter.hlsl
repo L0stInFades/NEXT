@@ -1,151 +1,70 @@
 //=============================================================================
-// GTAO Spatial Filter
-// Edge-aware bilateral filter for high-quality AO
+// GTAO Spatial and Temporal Filters
 //=============================================================================
 
-// Constants
-cbuffer FilterConstants : register(b0)
-{
-    float2 InvOutputSize;
-    float Sharpness;     // Edge preservation
-    int KernelRadius;    // Filter radius
-    float3 Padding;
+Texture2D<float4> AOTexture : register(t0, space0);
+SamplerState LinearClampSampler : register(s0, space0);
+
+cbuffer GTAOConstants : register(b0, space0) {
+    float radiusPixels;
+    float power;
+    float sampleCount;
+    float temporalStability;
+    float invWidth;
+    float invHeight;
+    float depthScale;
+    float padding0;
+};
+
+struct PSInput {
+    float4 position : SV_POSITION;
+    float2 texcoord : TEXCOORD0;
+};
+
+float SampleAO(float2 uv) {
+    return AOTexture.Sample(LinearClampSampler, saturate(uv)).r;
 }
 
-// Textures
-Texture2D<float> AOTexture : register(t0);
-Texture2D<float> DepthTexture : register(t1);
-Texture2D<float3> NormalTexture : register(t2);
-SamplerState SamplerLinear : register(s0);
+float4 PSFilter(PSInput input) : SV_Target {
+    const float2 uv = saturate(input.texcoord);
+    const float2 texel = float2(invWidth, invHeight);
+    const float radius = max(1.0f, radiusPixels * 0.10f);
+    const float2 r1 = texel * radius;
+    const float2 r2 = texel * radius * 2.0f;
 
-// Output
-RWTexture2D<float> OutputAO : register(u0);
-
-//=============================================================================
-// Utility Functions
-//=============================================================================
-
-float GetLinearDepth(float2 uv)
-{
-    return DepthTexture.Sample(SamplerLinear, uv).r;
+    float ao = SampleAO(uv) * 0.28f;
+    ao += SampleAO(uv + float2( r1.x, 0.0f)) * 0.12f;
+    ao += SampleAO(uv + float2(-r1.x, 0.0f)) * 0.12f;
+    ao += SampleAO(uv + float2(0.0f,  r1.y)) * 0.12f;
+    ao += SampleAO(uv + float2(0.0f, -r1.y)) * 0.12f;
+    ao += SampleAO(uv + float2( r2.x,  r2.y)) * 0.06f;
+    ao += SampleAO(uv + float2(-r2.x,  r2.y)) * 0.06f;
+    ao += SampleAO(uv + float2( r2.x, -r2.y)) * 0.06f;
+    ao += SampleAO(uv + float2(-r2.x, -r2.y)) * 0.06f;
+    ao = pow(saturate(ao), max(0.001f, power * 0.5f));
+    return float4(ao, ao, ao, 1.0f);
 }
 
-float3 GetNormal(float2 uv)
-{
-    return NormalTexture.Sample(SamplerLinear, uv).rgb;
-}
-
-// Bilateral weight calculation
-float CalculateWeight(float2 uv, float2 offset, float centerDepth, float3 centerNormal)
-{
-    float2 sampleUV = uv + offset;
-
-    // Get sample depth and normal
-    float sampleDepth = GetLinearDepth(sampleUV);
-    float3 sampleNormal = GetNormal(sampleUV);
-
-    // Depth weight (edge-aware)
-    float depthDelta = abs(centerDepth - sampleDepth);
-    float depthWeight = exp(-depthDelta * Sharpness);
-
-    // Normal weight
-    float normalDelta = 1.0 - dot(centerNormal, sampleNormal);
-    float normalWeight = exp(-normalDelta * Sharpness * 10.0);
-
-    // Spatial weight (Gaussian)
-    float dist = length(offset);
-    float spatialWeight = exp(-(dist * dist) / (2.0));
-
-    return depthWeight * normalWeight * spatialWeight;
-}
-
-//=============================================================================
-// Pixel Shader Entry Point
-//=============================================================================
-
-float4 PSFilter(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
-{
-    // Get center values
-    float centerAO = AOTexture.Sample(SamplerLinear, uv).r;
-    float centerDepth = GetLinearDepth(uv);
-    float3 centerNormal = GetNormal(uv);
-
-    // Skip filtering for invalid pixels
-    if (centerAO >= 0.999)
-    {
-        OutputAO[svPos.xy] = centerAO;
-        return centerAO;
-    }
-
-    // Accumulate filtered result
-    float totalWeight = 0.0001;
-    float filteredAO = 0.0;
-
-    // Filter kernel (separable for performance)
-    for (int x = -KernelRadius; x <= KernelRadius; ++x)
-    {
-        for (int y = -KernelRadius; y <= KernelRadius; ++y)
-        {
-            if (x == 0 && y == 0)
-                continue;
-
-            float2 offset = float2(x, y) * InvOutputSize;
-            float weight = CalculateWeight(uv, offset, centerDepth, centerNormal);
-
-            float2 sampleUV = uv + offset;
-            float sampleAO = AOTexture.Sample(SamplerLinear, sampleUV).r;
-
-            filteredAO += sampleAO * weight;
-            totalWeight += weight;
-        }
-    }
-
-    // Add center pixel
-    filteredAO += centerAO;
-    totalWeight += 1.0;
-
-    // Normalize
-    filteredAO /= totalWeight;
-    filteredAO = saturate(filteredAO);
-
-    OutputAO[svPos.xy] = filteredAO;
-    return filteredAO;
-}
-
-//=============================================================================
-// Temporal Accumulation (optional pass)
-//=============================================================================
-
-cbuffer TemporalConstants : register(b1)
-{
-    float Feedback;  // Temporal blend factor (0-1)
+cbuffer TemporalConstants : register(b1, space0) {
+    float Feedback;
     float3 Padding2;
-}
+};
 
-Texture2D<float> HistoryAO : register(t3);
-Texture2D<float2> MotionVectors : register(t4); // For reprojection
+Texture2D<float4> HistoryAO : register(t3, space0);
+Texture2D<float2> MotionVectors : register(t4, space0);
 
-float4 PSTemporal(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
-{
-    float currentAO = AOTexture.Sample(SamplerLinear, uv).r;
+float4 PSTemporal(PSInput input) : SV_Target {
+    const float2 uv = saturate(input.texcoord);
+    const float currentAO = SampleAO(uv);
+    const float2 motion = MotionVectors.Sample(LinearClampSampler, uv).rg;
+    const float2 prevUV = uv - motion;
 
-    // Get motion vector for reprojection
-    float2 motion = MotionVectors.Sample(SamplerLinear, uv).rg;
-    float2 prevUV = uv - motion;
-
-    // Check if previous frame is valid
-    if (prevUV.x < 0.0 || prevUV.x > 1.0 || prevUV.y < 0.0 || prevUV.y > 1.0)
-    {
-        OutputAO[svPos.xy] = currentAO;
-        return currentAO;
+    if (prevUV.x < 0.0f || prevUV.x > 1.0f || prevUV.y < 0.0f || prevUV.y > 1.0f) {
+        return float4(currentAO, currentAO, currentAO, 1.0f);
     }
 
-    // Get previous frame AO
-    float historyAO = HistoryAO.Sample(SamplerLinear, prevUV).r;
-
-    // Temporal blend
-    float blendedAO = lerp(historyAO, currentAO, Feedback);
-
-    OutputAO[svPos.xy] = blendedAO;
-    return blendedAO;
+    const float historyAO = HistoryAO.Sample(LinearClampSampler, prevUV).r;
+    const float feedback = saturate(Feedback);
+    const float blendedAO = lerp(historyAO, currentAO, feedback);
+    return float4(blendedAO, blendedAO, blendedAO, 1.0f);
 }

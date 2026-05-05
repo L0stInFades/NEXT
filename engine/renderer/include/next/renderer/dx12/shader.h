@@ -49,10 +49,12 @@ public:
         return InitializeFromFile(device, filepath, "main", "ps_5_1");
     }
 
-    // Convenience method for loading with custom entry point
+    bool CompileFromFile(DX12Device* device, const char* filepath, const char* entryPoint, const char* target) {
+        return InitializeFromFile(device, filepath, entryPoint, target);
+    }
+
     bool CompileFromFile(const wchar_t* filepath, const char* entryPoint, const char* target) {
-        // Placeholder - actual implementation would need DX12Device
-        return true;
+        return false;
     }
 
     D3D12_SHADER_BYTECODE GetPixelShader() const { return GetBytecode(); }

@@ -4,8 +4,7 @@
 namespace Next {
 
 DX12Material::DX12Material()
-    : device_(nullptr), heapManager_(nullptr), legacyHeap_(nullptr),
-      initialized_(false), useLegacyMode_(false) {
+    : device_(nullptr), heapManager_(nullptr), initialized_(false) {
 }
 
 DX12Material::~DX12Material() {
@@ -17,6 +16,13 @@ bool DX12Material::Initialize(DX12Device* device, DX12DescriptorHeapManager* hea
         NEXT_LOG_ERROR("Invalid device or heap manager for material");
         return false;
     }
+
+    if (!device->GetDevice()) {
+        NEXT_LOG_ERROR("Invalid D3D12 device for material");
+        return false;
+    }
+
+    Shutdown();
 
     device_ = device;
     heapManager_ = heapManager;
@@ -37,108 +43,47 @@ bool DX12Material::Initialize(DX12Device* device, DX12DescriptorHeapManager* hea
     return true;
 }
 
-// Legacy initialization for backward compatibility
-bool DX12Material::Initialize(DX12Device* device, DX12CBVSRVUAVHeap* srvHeap) {
-    if (!device || !srvHeap) {
-        NEXT_LOG_ERROR("Invalid device or SRV heap for material");
+bool DX12Material::LoadAlbedoMap(const wchar_t* filename, ID3D12CommandQueue* queue) {
+    if (!initialized_ || !device_ || !heapManager_) {
+        NEXT_LOG_ERROR("Material not initialized for albedo map loading");
         return false;
     }
 
-    device_ = device;
-    heapManager_ = nullptr;  // Not using heap manager in legacy mode
+    if (!filename || !queue) {
+        NEXT_LOG_ERROR("Invalid albedo map load request");
+        return false;
+    }
 
-    // Initialize descriptor allocations to use fixed heap offsets
-    // For legacy mode, we'll use fixed descriptor slots
-    albedoAllocation_ = DescriptorAllocation();
-    normalAllocation_ = DescriptorAllocation();
-    metallicAllocation_ = DescriptorAllocation();
-    roughnessAllocation_ = DescriptorAllocation();
-    aoAllocation_ = DescriptorAllocation();
+    DX12DescriptorHeap* srvHeap = GetSRVHeapForLoading();
+    if (!srvHeap) {
+        NEXT_LOG_ERROR("No SRV heap available for albedo map");
+        return false;
+    }
 
-    // Set up fixed descriptor handles for legacy heap
-    // Slot 0: Albedo, Slot 1: Normal, Slot 2: Metallic, Slot 3: Roughness, Slot 4: AO
-    UINT descriptorSize = device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    if (albedoAllocation_.count > 0) {
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, albedoAllocation_);
+        albedoAllocation_ = DescriptorAllocation();
+        albedoMap_.Shutdown();
+        material_.setUseAlbedoMap(false);
+    }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = srvHeap->GetCPUDescriptorHandle(0);
-    D3D12_GPU_DESCRIPTOR_HANDLE gpuBase = srvHeap->GetGPUDescriptorHandle(0);
-
-    // Set up allocations with fixed slots (0-4)
-    albedoAllocation_.cpuHandle = cpuBase;
-    albedoAllocation_.gpuHandle.ptr = gpuBase.ptr + 0 * descriptorSize;
-    albedoAllocation_.offset = 0;
-    albedoAllocation_.count = 1;
-
-    normalAllocation_.cpuHandle.ptr = cpuBase.ptr + 1 * descriptorSize;
-    normalAllocation_.gpuHandle.ptr = gpuBase.ptr + 1 * descriptorSize;
-    normalAllocation_.offset = 1;
-    normalAllocation_.count = 1;
-
-    metallicAllocation_.cpuHandle.ptr = cpuBase.ptr + 2 * descriptorSize;
-    metallicAllocation_.gpuHandle.ptr = gpuBase.ptr + 2 * descriptorSize;
-    metallicAllocation_.offset = 2;
-    metallicAllocation_.count = 1;
-
-    roughnessAllocation_.cpuHandle.ptr = cpuBase.ptr + 3 * descriptorSize;
-    roughnessAllocation_.gpuHandle.ptr = gpuBase.ptr + 3 * descriptorSize;
-    roughnessAllocation_.offset = 3;
-    roughnessAllocation_.count = 1;
-
-    aoAllocation_.cpuHandle.ptr = cpuBase.ptr + 4 * descriptorSize;
-    aoAllocation_.gpuHandle.ptr = gpuBase.ptr + 4 * descriptorSize;
-    aoAllocation_.offset = 4;
-    aoAllocation_.count = 1;
-
-    // Store the heap for texture initialization
-    legacyHeap_ = srvHeap;
-    useLegacyMode_ = true;
-    initialized_ = true;
-
-    NEXT_LOG_INFO("PBR Material initialized with legacy SRV heap (fixed slots 0-4)");
-
-    return true;
-}
-
-bool DX12Material::LoadAlbedoMap(const wchar_t* filename, ID3D12CommandQueue* queue) {
-    DX12DescriptorHeap* srvHeap = nullptr;
-
-    if (useLegacyMode_) {
-        // Use legacy heap (fixed slots already set up in Initialize)
-        srvHeap = legacyHeap_;
-        if (!srvHeap) {
-            NEXT_LOG_ERROR("Legacy SRV heap is null");
-            return false;
-        }
-    } else {
-        // Allocate descriptor from heap manager
-        srvHeap = heapManager_->GetHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        if (!srvHeap) {
-            NEXT_LOG_ERROR("No CBV_SRV_UAV heap available in heap manager");
-            return false;
-        }
-
-        // Allocate descriptor for albedo map
-        albedoAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-        if (albedoAllocation_.count == 0) {
-            NEXT_LOG_ERROR("Failed to allocate descriptor for albedo map");
-            return false;
-        }
+    albedoAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+    if (albedoAllocation_.count == 0) {
+        NEXT_LOG_ERROR("Failed to allocate descriptor for albedo map");
+        return false;
     }
 
     if (!albedoMap_.Initialize(device_, srvHeap)) {
         NEXT_LOG_ERROR("Failed to initialize albedo map texture");
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, albedoAllocation_);
-            albedoAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, albedoAllocation_);
+        albedoAllocation_ = DescriptorAllocation();
         return false;
     }
 
     if (!albedoMap_.LoadFromFile(filename, queue, albedoAllocation_.cpuHandle)) {
         NEXT_LOG_ERROR("Failed to load albedo map: %ls", filename);
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, albedoAllocation_);
-            albedoAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, albedoAllocation_);
+        albedoAllocation_ = DescriptorAllocation();
         return false;
     }
 
@@ -149,43 +94,53 @@ bool DX12Material::LoadAlbedoMap(const wchar_t* filename, ID3D12CommandQueue* qu
 
 // Helper method to get SRV heap for texture loading
 DX12DescriptorHeap* DX12Material::GetSRVHeapForLoading() {
-    if (useLegacyMode_) {
-        return legacyHeap_;
-    } else {
-        return heapManager_->GetHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    if (!heapManager_) {
+        return nullptr;
     }
+    return heapManager_->GetHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }
 
 bool DX12Material::LoadNormalMap(const wchar_t* filename, ID3D12CommandQueue* queue) {
+    if (!initialized_ || !device_ || !heapManager_) {
+        NEXT_LOG_ERROR("Material not initialized for normal map loading");
+        return false;
+    }
+
+    if (!filename || !queue) {
+        NEXT_LOG_ERROR("Invalid normal map load request");
+        return false;
+    }
+
     DX12DescriptorHeap* srvHeap = GetSRVHeapForLoading();
     if (!srvHeap) {
         NEXT_LOG_ERROR("No SRV heap available for normal map");
         return false;
     }
 
-    if (!useLegacyMode_) {
-        normalAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-        if (normalAllocation_.count == 0) {
-            NEXT_LOG_ERROR("Failed to allocate descriptor for normal map");
-            return false;
-        }
+    if (normalAllocation_.count > 0) {
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, normalAllocation_);
+        normalAllocation_ = DescriptorAllocation();
+        normalMap_.Shutdown();
+        material_.setUseNormalMap(false);
+    }
+
+    normalAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+    if (normalAllocation_.count == 0) {
+        NEXT_LOG_ERROR("Failed to allocate descriptor for normal map");
+        return false;
     }
 
     if (!normalMap_.Initialize(device_, srvHeap)) {
         NEXT_LOG_ERROR("Failed to initialize normal map texture");
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, normalAllocation_);
-            normalAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, normalAllocation_);
+        normalAllocation_ = DescriptorAllocation();
         return false;
     }
 
     if (!normalMap_.LoadFromFile(filename, queue, normalAllocation_.cpuHandle)) {
         NEXT_LOG_ERROR("Failed to load normal map: %ls", filename);
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, normalAllocation_);
-            normalAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, normalAllocation_);
+        normalAllocation_ = DescriptorAllocation();
         return false;
     }
 
@@ -195,35 +150,46 @@ bool DX12Material::LoadNormalMap(const wchar_t* filename, ID3D12CommandQueue* qu
 }
 
 bool DX12Material::LoadMetallicMap(const wchar_t* filename, ID3D12CommandQueue* queue) {
+    if (!initialized_ || !device_ || !heapManager_) {
+        NEXT_LOG_ERROR("Material not initialized for metallic map loading");
+        return false;
+    }
+
+    if (!filename || !queue) {
+        NEXT_LOG_ERROR("Invalid metallic map load request");
+        return false;
+    }
+
     DX12DescriptorHeap* srvHeap = GetSRVHeapForLoading();
     if (!srvHeap) {
         NEXT_LOG_ERROR("No SRV heap available for metallic map");
         return false;
     }
 
-    if (!useLegacyMode_) {
-        metallicAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-        if (metallicAllocation_.count == 0) {
-            NEXT_LOG_ERROR("Failed to allocate descriptor for metallic map");
-            return false;
-        }
+    if (metallicAllocation_.count > 0) {
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, metallicAllocation_);
+        metallicAllocation_ = DescriptorAllocation();
+        metallicMap_.Shutdown();
+        material_.setUseMetallicMap(false);
+    }
+
+    metallicAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+    if (metallicAllocation_.count == 0) {
+        NEXT_LOG_ERROR("Failed to allocate descriptor for metallic map");
+        return false;
     }
 
     if (!metallicMap_.Initialize(device_, srvHeap)) {
         NEXT_LOG_ERROR("Failed to initialize metallic map texture");
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, metallicAllocation_);
-            metallicAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, metallicAllocation_);
+        metallicAllocation_ = DescriptorAllocation();
         return false;
     }
 
     if (!metallicMap_.LoadFromFile(filename, queue, metallicAllocation_.cpuHandle)) {
         NEXT_LOG_ERROR("Failed to load metallic map: %ls", filename);
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, metallicAllocation_);
-            metallicAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, metallicAllocation_);
+        metallicAllocation_ = DescriptorAllocation();
         return false;
     }
 
@@ -233,35 +199,46 @@ bool DX12Material::LoadMetallicMap(const wchar_t* filename, ID3D12CommandQueue* 
 }
 
 bool DX12Material::LoadRoughnessMap(const wchar_t* filename, ID3D12CommandQueue* queue) {
+    if (!initialized_ || !device_ || !heapManager_) {
+        NEXT_LOG_ERROR("Material not initialized for roughness map loading");
+        return false;
+    }
+
+    if (!filename || !queue) {
+        NEXT_LOG_ERROR("Invalid roughness map load request");
+        return false;
+    }
+
     DX12DescriptorHeap* srvHeap = GetSRVHeapForLoading();
     if (!srvHeap) {
         NEXT_LOG_ERROR("No SRV heap available for roughness map");
         return false;
     }
 
-    if (!useLegacyMode_) {
-        roughnessAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-        if (roughnessAllocation_.count == 0) {
-            NEXT_LOG_ERROR("Failed to allocate descriptor for roughness map");
-            return false;
-        }
+    if (roughnessAllocation_.count > 0) {
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, roughnessAllocation_);
+        roughnessAllocation_ = DescriptorAllocation();
+        roughnessMap_.Shutdown();
+        material_.setUseRoughnessMap(false);
+    }
+
+    roughnessAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+    if (roughnessAllocation_.count == 0) {
+        NEXT_LOG_ERROR("Failed to allocate descriptor for roughness map");
+        return false;
     }
 
     if (!roughnessMap_.Initialize(device_, srvHeap)) {
         NEXT_LOG_ERROR("Failed to initialize roughness map texture");
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, roughnessAllocation_);
-            roughnessAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, roughnessAllocation_);
+        roughnessAllocation_ = DescriptorAllocation();
         return false;
     }
 
     if (!roughnessMap_.LoadFromFile(filename, queue, roughnessAllocation_.cpuHandle)) {
         NEXT_LOG_ERROR("Failed to load roughness map: %ls", filename);
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, roughnessAllocation_);
-            roughnessAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, roughnessAllocation_);
+        roughnessAllocation_ = DescriptorAllocation();
         return false;
     }
 
@@ -271,35 +248,46 @@ bool DX12Material::LoadRoughnessMap(const wchar_t* filename, ID3D12CommandQueue*
 }
 
 bool DX12Material::LoadAOMap(const wchar_t* filename, ID3D12CommandQueue* queue) {
+    if (!initialized_ || !device_ || !heapManager_) {
+        NEXT_LOG_ERROR("Material not initialized for AO map loading");
+        return false;
+    }
+
+    if (!filename || !queue) {
+        NEXT_LOG_ERROR("Invalid AO map load request");
+        return false;
+    }
+
     DX12DescriptorHeap* srvHeap = GetSRVHeapForLoading();
     if (!srvHeap) {
         NEXT_LOG_ERROR("No SRV heap available for AO map");
         return false;
     }
 
-    if (!useLegacyMode_) {
-        aoAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-        if (aoAllocation_.count == 0) {
-            NEXT_LOG_ERROR("Failed to allocate descriptor for AO map");
-            return false;
-        }
+    if (aoAllocation_.count > 0) {
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, aoAllocation_);
+        aoAllocation_ = DescriptorAllocation();
+        aoMap_.Shutdown();
+        material_.setUseAOMap(false);
+    }
+
+    aoAllocation_ = heapManager_->Allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+    if (aoAllocation_.count == 0) {
+        NEXT_LOG_ERROR("Failed to allocate descriptor for AO map");
+        return false;
     }
 
     if (!aoMap_.Initialize(device_, srvHeap)) {
         NEXT_LOG_ERROR("Failed to initialize AO map texture");
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, aoAllocation_);
-            aoAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, aoAllocation_);
+        aoAllocation_ = DescriptorAllocation();
         return false;
     }
 
     if (!aoMap_.LoadFromFile(filename, queue, aoAllocation_.cpuHandle)) {
         NEXT_LOG_ERROR("Failed to load AO map: %ls", filename);
-        if (!useLegacyMode_) {
-            heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, aoAllocation_);
-            aoAllocation_ = DescriptorAllocation();
-        }
+        heapManager_->Release(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, aoAllocation_);
+        aoAllocation_ = DescriptorAllocation();
         return false;
     }
 

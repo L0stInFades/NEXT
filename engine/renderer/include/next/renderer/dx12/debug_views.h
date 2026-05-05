@@ -24,6 +24,7 @@ enum class DebugViewMode {
     MotionVectors = 10,  // Motion vectors
     UV = 11,             // Texture coordinates
     TriangleCount = 12,  // Overdraw/triangle count
+    Heatmap = 13,        // Generic performance density heatmap
 };
 
 // Debug Views (UE5/RAGE Style Visualization)
@@ -46,20 +47,25 @@ public:
     // Toggle debug mode
     void ToggleDebugMode() {
         int mode = static_cast<int>(debugMode_) + 1;
-        if (mode > static_cast<int>(DebugViewMode::TriangleCount)) {
+        if (mode > static_cast<int>(DebugViewMode::Heatmap)) {
             mode = static_cast<int>(DebugViewMode::Default);
         }
         debugMode_ = static_cast<DebugViewMode>(mode);
     }
 
     // Render debug overlay
-    void RenderDebugOverlay(ID3D12GraphicsCommandList* commandList);
+    void RenderDebugOverlay(ID3D12GraphicsCommandList* commandList,
+                            D3D12_CPU_DESCRIPTOR_HANDLE outputRTV,
+                            uint32_t width,
+                            uint32_t height);
 
     // Visualize specific component
-    void RenderWireframe(ID3D12GraphicsCommandList* commandList);
-    void RenderNormals(ID3D12GraphicsCommandList* commandList);
-    void RenderDepth(ID3D12GraphicsCommandList* commandList);
-    void RenderHeatmap(ID3D12GraphicsCommandList* commandList, const char* label);
+    void RenderWireframe(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DESCRIPTOR_HANDLE outputRTV);
+    void RenderNormals(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DESCRIPTOR_HANDLE outputRTV);
+    void RenderDepth(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DESCRIPTOR_HANDLE outputRTV);
+    void RenderHeatmap(ID3D12GraphicsCommandList* commandList,
+                       D3D12_CPU_DESCRIPTOR_HANDLE outputRTV,
+                       const char* label);
 
     // Cleanup
     void Shutdown();
@@ -75,6 +81,10 @@ private:
 
     // Debug visualization resources
     Microsoft::WRL::ComPtr<ID3D12Resource> debugTexture_;
+
+    void ClearDebugOutput(ID3D12GraphicsCommandList* commandList,
+                          D3D12_CPU_DESCRIPTOR_HANDLE outputRTV,
+                          const float color[4]);
 
     bool initialized_;
 };

@@ -19,12 +19,12 @@ public:
 
     // Fence operations
     uint64_t Signal(ID3D12CommandQueue* queue);
-    void Wait(uint64_t value);
+    bool Wait(uint64_t value);
     void WaitCPU(uint64_t value);
 
     // Get current fence value
     uint64_t GetCurrentValue() const { return currentValue_; }
-    uint64_t GetCompletedValue() const { return fence_->GetCompletedValue(); }
+    uint64_t GetCompletedValue() const { return fence_ ? fence_->GetCompletedValue() : 0; }
 
     // Fence access
     ID3D12Fence* GetFence() const { return fence_.Get(); }

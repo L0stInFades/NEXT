@@ -21,3 +21,16 @@ if(WIN32)
         dbghelp
     )
 endif()
+
+if(APPLE)
+    target_sources(next_platform PRIVATE
+        src/apple/window_cocoa.mm
+    )
+    set_source_files_properties(src/apple/window_cocoa.mm PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc"
+    )
+    target_link_libraries(next_platform PUBLIC
+        "-framework Cocoa"
+        "-framework QuartzCore"
+    )
+endif()

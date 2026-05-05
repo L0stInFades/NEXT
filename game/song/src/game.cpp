@@ -10,6 +10,7 @@
 #include "next/jobsystem/job_system.h"
 #include "next/runtime/asset/asset_manager.h"
 #include "next/streaming/streaming_manager.h"
+#include <algorithm>
 #include <filesystem>
 #include <atomic>
 #include <vector>
@@ -92,7 +93,8 @@ namespace Song {
 
 Game::Game(const GameOptions& options)
     : options_(options)
-    , running_(false) {
+    , running_(false)
+    , initialized_(false) {
 }
 
 Game::~Game() {
@@ -103,7 +105,7 @@ bool Game::Initialize() {
     NEXT_LOG_INFO("Initializing Song Dynasty Game...");
     NEXT_LOG_INFO("Platform: %s", Next::GetPlatformName());
 
-    if (running_) {
+    if (initialized_) {
         NEXT_LOG_WARNING("Game already initialized");
         return true;
     }
@@ -113,6 +115,7 @@ bool Game::Initialize() {
         return false;
     }
 
+    initialized_ = true;
     NEXT_LOG_INFO("Game initialized successfully");
     return true;
 }
@@ -194,11 +197,14 @@ bool Game::InitializeEngine() {
 }
 
 void Game::Shutdown() {
-    if (running_) {
-        running_ = false;
-        ShutdownEngine();
-        NEXT_LOG_INFO("Game shutdown complete");
+    if (!initialized_) {
+        return;
     }
+
+    running_ = false;
+    ShutdownEngine();
+    initialized_ = false;
+    NEXT_LOG_INFO("Game shutdown complete");
 }
 
 void Game::ShutdownEngine() {
@@ -211,23 +217,25 @@ void Game::ShutdownEngine() {
         renderer_ = nullptr;
     }
 
-    Next::JobSystem::Instance().Shutdown();
-
-    // Shutdown asset manager (CP3)
-    Next::AssetManager::Instance().Shutdown();
-
-    world_.reset();
-
     if (streaming_) {
         streaming_->Shutdown();
         streaming_.reset();
     }
+
+    world_.reset();
+
+    Next::JobSystem::Instance().Shutdown();
+
+    // Shutdown asset manager (CP3)
+    Next::AssetManager::Instance().Shutdown();
 
     if (window_) {
         window_->Shutdown();
         delete window_;
         window_ = nullptr;
     }
+
+    input_ = nullptr;
 
     Next::Logger::Shutdown();
     Next::PlatformShutdown();
@@ -311,7 +319,7 @@ void Game::Run() {
 void Game::Tick(float deltaTime) {
     HandleInput(deltaTime);
     UpdateGame(deltaTime);
-    Render();
+    Render(deltaTime);
 }
 
 void Game::HandleInput(float deltaTime) {
@@ -352,10 +360,48 @@ void Game::UpdateGame(float deltaTime) {
     }
 }
 
-void Game::Render() {
+void Game::Render(float deltaTime) {
     if (!renderer_ || !window_) {
         return;
     }
+
+    Next::RendererFrameDesc frame = {};
+    frame.cameraPosition[0] = camX_;
+    frame.cameraPosition[1] = camY_ + 48.0f;
+    frame.cameraPosition[2] = camZ_ - 96.0f;
+    frame.cameraTarget[0] = camX_;
+    frame.cameraTarget[1] = camY_;
+    frame.cameraTarget[2] = camZ_ + 64.0f;
+    frame.cameraUp[0] = 0.0f;
+    frame.cameraUp[1] = 1.0f;
+    frame.cameraUp[2] = 0.0f;
+    frame.deltaSeconds = deltaTime;
+
+    if (streaming_) {
+        const auto loadedCells = streaming_->GetLoadedCells();
+        frame.debugCells.reserve(std::min(loadedCells.size(), Next::kMaxRendererDebugCells));
+
+        for (const Next::Streaming::CellCoord& coord : loadedCells) {
+            if (frame.debugCells.size() >= Next::kMaxRendererDebugCells) {
+                break;
+            }
+
+            const Next::Streaming::CellData* cell = streaming_->GetCell(coord);
+            if (!cell) {
+                continue;
+            }
+
+            Next::RendererDebugCell debugCell = {};
+            debugCell.center[0] = cell->metadata.worldPosition.x;
+            debugCell.center[1] = cell->metadata.worldPosition.y;
+            debugCell.center[2] = cell->metadata.worldPosition.z;
+            debugCell.size = std::max(1.0f, cell->metadata.cellSize);
+            debugCell.flags = cell->isPlaceholderData ? Next::kRendererDebugCellPlaceholder : 0u;
+            frame.debugCells.push_back(debugCell);
+        }
+    }
+
+    renderer_->SetFrameDesc(frame);
 
     renderer_->BeginFrame();
     renderer_->Render();

@@ -1,8 +1,10 @@
 #include "next/renderer/dx12/texture.h"
 #include "next/foundation/logger.h"
+#include "next/renderer/dx12/fence.h"
 #include <wincodec.h>
 #include <comdef.h>
 #include <vector>
+#include <mutex>
 
 namespace Next {
 
@@ -13,6 +15,33 @@ namespace Next {
         NEXT_LOG_ERROR("%s: %s (0x%X)", msg, err.ErrorMessage(), hr); \
         return false; \
     }
+
+namespace {
+
+void CreateCheckerboardTextureData(std::vector<uint8_t>& textureData,
+                                   UINT& width,
+                                   UINT& height,
+                                   DXGI_FORMAT& format) {
+    constexpr UINT kSize = 128;
+    constexpr UINT kBytesPerPixel = 4;
+    width = kSize;
+    height = kSize;
+    format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    textureData.resize(width * height * kBytesPerPixel);
+
+    for (UINT y = 0; y < height; ++y) {
+        for (UINT x = 0; x < width; ++x) {
+            const bool checker = (((x / 16) ^ (y / 16)) & 1u) != 0;
+            const UINT offset = (y * width + x) * kBytesPerPixel;
+            textureData[offset + 0] = checker ? 230 : 58;
+            textureData[offset + 1] = checker ? 238 : 72;
+            textureData[offset + 2] = checker ? 218 : 96;
+            textureData[offset + 3] = 255;
+        }
+    }
+}
+
+} // namespace
 
 DX12Texture::DX12Texture()
     : device_(nullptr), srvHeap_(nullptr), width_(0), height_(0),
@@ -43,41 +72,10 @@ bool DX12Texture::LoadFromFile(const wchar_t* filename, ID3D12CommandQueue* comm
         return false;
     }
 
-    if (!commandQueue) {
-        NEXT_LOG_ERROR("Invalid command queue for texture loading");
-        return false;
-    }
-
-    NEXT_LOG_INFO("Loading texture from file: %ls", filename);
-
-    // Load image data using WIC
-    std::vector<uint8_t> textureData;
-    UINT width, height;
-    DXGI_FORMAT format;
-
-    if (!LoadImageFromWIC(filename, textureData, width, height, format)) {
-        NEXT_LOG_ERROR("Failed to load image from WIC");
-        return false;
-    }
-
-    width_ = width;
-    height_ = height;
-    format_ = format;
-
-    // Create texture resource and upload to GPU
-    if (!CreateTextureResource(textureData.data(), width, height, format, commandQueue)) {
-        NEXT_LOG_ERROR("Failed to create texture resource");
-        return false;
-    }
-
-    // Create shader resource view
-    if (!CreateShaderResourceView(format)) {
-        NEXT_LOG_ERROR("Failed to create shader resource view");
-        return false;
-    }
-
-    NEXT_LOG_INFO("Texture loaded successfully (%ux%u, format: %d)", width_, height_, format_);
-    return true;
+    (void)filename;
+    (void)commandQueue;
+    NEXT_LOG_ERROR("Texture loading requires an explicit descriptor allocation");
+    return false;
 }
 
 bool DX12Texture::LoadFromFile(const wchar_t* filename, ID3D12CommandQueue* commandQueue, D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor) {
@@ -99,8 +97,8 @@ bool DX12Texture::LoadFromFile(const wchar_t* filename, ID3D12CommandQueue* comm
     DXGI_FORMAT format;
 
     if (!LoadImageFromWIC(filename, textureData, width, height, format)) {
-        NEXT_LOG_ERROR("Failed to load image from WIC");
-        return false;
+        NEXT_LOG_WARNING("Failed to load image from WIC; using procedural checkerboard texture");
+        CreateCheckerboardTextureData(textureData, width, height, format);
     }
 
     width_ = width;
@@ -176,6 +174,14 @@ bool DX12Texture::LoadImageFromWIC(const wchar_t* filename,
 }
 
 bool DX12Texture::CreateTextureResource(const void* data, UINT width, UINT height, DXGI_FORMAT format, ID3D12CommandQueue* commandQueue) {
+    if (!device_ || !device_->GetDevice() || !commandQueue || !data || width == 0 || height == 0) {
+        NEXT_LOG_ERROR("Invalid parameters for texture resource creation");
+        return false;
+    }
+
+    texture_.Reset();
+    textureUpload_.Reset();
+
     // Describe texture
     D3D12_RESOURCE_DESC textureDesc = {};
     textureDesc.MipLevels = 1;
@@ -316,12 +322,20 @@ bool DX12Texture::CreateTextureResource(const void* data, UINT width, UINT heigh
     commandList->ResourceBarrier(1, &barrier);
 
     // Execute command list
-    commandList->Close();
+    hr = commandList->Close();
+    if (FAILED(hr)) {
+        NEXT_LOG_ERROR("Failed to close texture upload command list: 0x%X", hr);
+        return false;
+    }
+
     ID3D12CommandList* lists[] = { commandList.Get() };
     commandQueue->ExecuteCommandLists(1, lists);
 
     // Wait for upload to complete using proper fence mechanism
-    WaitForUpload(commandQueue);
+    if (!WaitForUpload(commandQueue)) {
+        NEXT_LOG_ERROR("Texture upload did not complete");
+        return false;
+    }
 
     // Upload heap can be released after upload completes
     textureUpload_.Reset();
@@ -330,38 +344,49 @@ bool DX12Texture::CreateTextureResource(const void* data, UINT width, UINT heigh
 }
 
 bool DX12Texture::CreateShaderResourceView(DXGI_FORMAT format) {
-    // Get descriptor handle from SRV heap (legacy behavior - use offset 0)
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = srvHeap_->GetCPUDescriptorHandle(0);
-    gpuDescriptorHandle_ = srvHeap_->GetGPUDescriptorHandle(0);
-
-    // Create SRV description
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = format;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Texture2D.MipLevels = 1;
-    srvDesc.Texture2D.MostDetailedMip = 0;
-    srvDesc.Texture2D.PlaneSlice = 0;
-    srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-
-    device_->GetDevice()->CreateShaderResourceView(texture_.Get(), &srvDesc, cpuHandle);
-
-    return true;
+    (void)format;
+    NEXT_LOG_ERROR("Texture SRV creation requires an explicit descriptor allocation");
+    return false;
 }
 
 bool DX12Texture::CreateShaderResourceView(DXGI_FORMAT format, D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor) {
     // Use provided CPU descriptor handle
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = cpuDescriptor;
 
-    // Get GPU handle (we need to calculate this from the CPU handle and heap)
-    // For now, we'll derive it from the SRV heap's base handle
-    // Note: This assumes the descriptor is from the same heap
+    if (cpuHandle.ptr == 0) {
+        NEXT_LOG_ERROR("Invalid CPU descriptor handle for SRV creation");
+        return false;
+    }
+
+    if (!srvHeap_) {
+        NEXT_LOG_ERROR("Invalid SRV heap for shader resource view");
+        return false;
+    }
+
     D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = srvHeap_->GetCPUDescriptorHandle(0);
     D3D12_GPU_DESCRIPTOR_HANDLE gpuBase = srvHeap_->GetGPUDescriptorHandle(0);
-    UINT descriptorSize = device_->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    UINT descriptorSize = srvHeap_->GetDescriptorSize();
+    UINT descriptorCount = srvHeap_->GetNumDescriptors();
 
-    // Calculate offset from base
-    UINT64 offset = (cpuHandle.ptr - cpuBase.ptr) / descriptorSize;
+    if (descriptorSize == 0) {
+        NEXT_LOG_ERROR("Invalid descriptor size for SRV creation");
+        return false;
+    }
+
+    const SIZE_T heapStart = cpuBase.ptr;
+    const SIZE_T heapEnd = heapStart + static_cast<SIZE_T>(descriptorSize) * descriptorCount;
+    if (cpuHandle.ptr < heapStart || cpuHandle.ptr >= heapEnd) {
+        NEXT_LOG_ERROR("SRV descriptor handle does not belong to the texture SRV heap");
+        return false;
+    }
+
+    const SIZE_T byteOffset = cpuHandle.ptr - heapStart;
+    if ((byteOffset % descriptorSize) != 0) {
+        NEXT_LOG_ERROR("SRV descriptor handle is not aligned to descriptor size");
+        return false;
+    }
+
+    UINT64 offset = byteOffset / descriptorSize;
     gpuDescriptorHandle_.ptr = gpuBase.ptr + offset * descriptorSize;
 
     // Create SRV description
@@ -398,58 +423,42 @@ void DX12Texture::Shutdown() {
     initialized_ = false;
 }
 
-void DX12Texture::WaitForUpload(ID3D12CommandQueue* commandQueue) {
+bool DX12Texture::WaitForUpload(ID3D12CommandQueue* commandQueue) {
     if (!commandQueue || !device_) {
         NEXT_LOG_ERROR("Invalid command queue or device for texture upload wait");
-        return;
+        return false;
     }
 
-    // Create a fence for this upload (one-time fence for texture loading)
-    Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-    HRESULT hr = device_->GetDevice()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-    if (FAILED(hr)) {
-        NEXT_LOG_ERROR("Failed to create fence for texture upload: 0x%X", hr);
-        return;
+    static DX12Fence uploadFence;
+    static DX12Device* uploadFenceDevice = nullptr;
+    static std::mutex uploadFenceMutex;
+
+    std::lock_guard<std::mutex> lock(uploadFenceMutex);
+
+    // Reinitialize shared upload fence if device changed.
+    if (uploadFenceDevice != device_) {
+        uploadFence.Shutdown();
+        if (!uploadFence.Initialize(device_)) {
+            NEXT_LOG_ERROR("Failed to initialize shared texture upload fence");
+            return false;
+        }
+        uploadFenceDevice = device_;
     }
 
-    // Create event for fence synchronization
-    HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    if (!fenceEvent) {
-        NEXT_LOG_ERROR("Failed to create fence event for texture upload");
-        return;
+    const uint64_t fenceValue = uploadFence.Signal(commandQueue);
+    if (fenceValue == 0) {
+        NEXT_LOG_ERROR("Failed to signal shared texture upload fence");
+        return false;
     }
 
-    // Signal the fence with value 1
-    UINT64 fenceValue = 1;
-    hr = commandQueue->Signal(fence.Get(), fenceValue);
-    if (FAILED(hr)) {
-        NEXT_LOG_ERROR("Failed to signal fence for texture upload: 0x%X", hr);
-        CloseHandle(fenceEvent);
-        return;
+    // Block on the shared fence (no per-upload fence/event creation).
+    if (!uploadFence.Wait(fenceValue)) {
+        NEXT_LOG_ERROR("Texture upload fence wait failed (value: %llu)", fenceValue);
+        return false;
     }
 
-    // Set event to trigger when fence reaches the value
-    hr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
-    if (FAILED(hr)) {
-        NEXT_LOG_ERROR("Failed to set fence event: 0x%X", hr);
-        CloseHandle(fenceEvent);
-        return;
-    }
-
-    // Wait for the upload to complete
-    NEXT_LOG_DEBUG("Waiting for texture upload to complete...");
-    DWORD waitResult = WaitForSingleObject(fenceEvent, 5000);  // 5 second timeout
-
-    if (waitResult == WAIT_TIMEOUT) {
-        NEXT_LOG_WARNING("Texture upload wait timeout (value: %llu, completed: %llu)",
-                        fenceValue, fence->GetCompletedValue());
-    } else if (waitResult == WAIT_FAILED) {
-        NEXT_LOG_ERROR("Texture upload wait failed (value: %llu)", fenceValue);
-    } else {
-        NEXT_LOG_DEBUG("Texture upload completed successfully");
-    }
-
-    CloseHandle(fenceEvent);
+    NEXT_LOG_DEBUG("Texture upload completed (fence value: %llu)", fenceValue);
+    return true;
 }
 
 } // namespace Next

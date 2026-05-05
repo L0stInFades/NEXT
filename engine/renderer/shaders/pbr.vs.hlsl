@@ -5,6 +5,7 @@
 struct VSInput {
     float3 position : POSITION;
     float3 normal : NORMAL;
+    float3 tangent : TANGENT;
     float2 texcoord : TEXCOORD;
 };
 
@@ -12,6 +13,7 @@ struct VSOutput {
     float4 position : SV_POSITION;
     float3 worldPos : WORLD_POSITION;
     float3 normal : NORMAL;
+    float3 tangent : TANGENT;
     float2 texcoord : TEXCOORD;
 };
 
@@ -32,8 +34,10 @@ VSOutput main(VSInput input) {
     float4 worldPos = mul(float4(input.position, 1.0f), model);
     output.worldPos = worldPos.xyz;
 
-    // Transform normal to world space
-    output.normal = mul(input.normal, (float3x3)model);
+    // Transform tangent basis to world space
+    float3x3 model3 = (float3x3)model;
+    output.normal = normalize(mul(input.normal, model3));
+    output.tangent = normalize(mul(input.tangent, model3));
 
     // Pass through texture coordinates
     output.texcoord = input.texcoord;

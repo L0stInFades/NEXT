@@ -193,8 +193,10 @@ private:
     // Probe info
     uint32_t maxProbes_;
     uint32_t currentProbeCount_;
+    bool probeBufferShaderReadable_;
 
     bool initialized_;
+    bool renderEvidenceLogged_;
 };
 
 //=============================================================================
@@ -241,6 +243,10 @@ public:
     const std::vector<LightProbeVolume*>& GetVolumes() const { return volumes_; }
 
 private:
+    bool CreateShaders();
+    bool CreateRootSignature();
+    bool CreatePipelineStates();
+
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
@@ -370,6 +376,7 @@ private:
     // Probe data
     Microsoft::WRL::ComPtr<ID3D12Resource> probeData_;
     Microsoft::WRL::ComPtr<ID3D12Resource> probeHistory_;  // Temporal history
+    DX12RTVHeap rtvHeap_;
 
     // Pipeline
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
@@ -377,6 +384,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> renderPSO_;
 
     // Shaders
+    DX12VertexShader fullscreenVertexShader_;
     DX12ComputeShader updateShader_;
     DX12PixelShader renderShader_;
 

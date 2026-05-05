@@ -12,6 +12,8 @@ DX12RootSignature::~DX12RootSignature() {
 }
 
 bool DX12RootSignature::Initialize(DX12Device* device) {
+    Shutdown();
+
     if (!device || !device->GetDevice()) {
         NEXT_LOG_ERROR("Invalid device for root signature");
         return false;

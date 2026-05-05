@@ -66,25 +66,30 @@ void DX12Fence::Shutdown() {
 }
 
 uint64_t DX12Fence::Signal(ID3D12CommandQueue* queue) {
-    if (!queue || !initialized_) {
+    if (!queue || !initialized_ || !fence_) {
         return 0;
     }
 
-    // Signal the fence with current value
-    queue->Signal(fence_.Get(), currentValue_);
+    const uint64_t value = currentValue_ + 1;
+    HRESULT hr = queue->Signal(fence_.Get(), value);
+    if (FAILED(hr)) {
+        NEXT_LOG_ERROR("Failed to signal fence: 0x%X", hr);
+        return 0;
+    }
 
-    return currentValue_++;
+    currentValue_ = value;
+    return value;
 }
 
-void DX12Fence::Wait(uint64_t value) {
-    if (!initialized_) {
-        return;
+bool DX12Fence::Wait(uint64_t value) {
+    if (!initialized_ || !fence_ || value == 0) {
+        return false;
     }
 
     // Check if fence has already reached the value
     uint64_t completedValue = fence_->GetCompletedValue();
     if (completedValue >= value) {
-        return;  // Already completed
+        return true;  // Already completed
     }
 
     // Set event to trigger when fence reaches value
@@ -96,16 +101,20 @@ void DX12Fence::Wait(uint64_t value) {
         if (waitResult == WAIT_TIMEOUT) {
             NEXT_LOG_WARNING("Fence wait timeout (value: %llu, completed: %llu)",
                           value, fence_->GetCompletedValue());
+            return false;
         } else if (waitResult == WAIT_FAILED) {
             NEXT_LOG_ERROR("Fence wait failed (value: %llu)", value);
+            return false;
         }
+        return true;
     } else {
         NEXT_LOG_ERROR("Failed to set fence event: 0x%X", hr);
+        return false;
     }
 }
 
 void DX12Fence::WaitCPU(uint64_t value) {
-    if (!initialized_) {
+    if (!initialized_ || !fence_ || value == 0) {
         return;
     }
 

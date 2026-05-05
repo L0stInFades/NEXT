@@ -24,9 +24,10 @@ struct DescriptorAllocation {
     UINT offset;
     UINT count;
     uint32_t frameIndex;
+    bool frameScoped;
 
     DescriptorAllocation()
-        : heapIndex(0), offset(0), count(0), frameIndex(0) {
+        : heapIndex(0), offset(0), count(0), frameIndex(0), frameScoped(false) {
         cpuHandle.ptr = 0;
         gpuHandle.ptr = 0;
     }
@@ -41,8 +42,8 @@ struct DescriptorAllocation {
  * Usage:
  *   1. Create allocator with heap and descriptor size
  *   2. Allocate descriptors (returns CPU and GPU handles)
- *   3. Use descriptors for rendering
- *   4. Release descriptors when frame completes (or auto-release after N frames)
+ *   3. Use persistent descriptors until explicit release
+ *   4. Use frame-scoped descriptors only for temporary per-frame tables
  */
 class DX12DescriptorAllocator {
 public:
@@ -72,9 +73,10 @@ public:
     /**
      * @brief Allocate descriptors from the heap
      * @param count Number of descriptors to allocate
+     * @param frameScoped Whether this allocation should be auto-released after the frame window
      * @return Allocation with CPU/GPU handles, or empty allocation if failed
      */
-    DescriptorAllocation Allocate(UINT count = 1);
+    DescriptorAllocation Allocate(UINT count = 1, bool frameScoped = false);
 
     /**
      * @brief Release an allocation back to the free list
@@ -87,6 +89,12 @@ public:
      * @param frameIndex Frame index to release
      */
     void ReleaseFrameAllocations(uint32_t frameIndex);
+
+    /**
+     * @brief Advance allocator frame tracking
+     * @param frameIndex Current frame index from the owning manager
+     */
+    void SetCurrentFrame(uint32_t frameIndex);
 
     /**
      * @brief Reset all allocations (use with caution)
@@ -201,11 +209,13 @@ public:
      * @brief Allocate a descriptor from a specific heap type
      * @param heapType Type of heap (CBV_SRV_UAV, SAMPLER, etc.)
      * @param count Number of descriptors to allocate
+     * @param frameScoped Whether this allocation should be auto-released after the frame window
      * @return Allocation with handles
      */
     DescriptorAllocation Allocate(
         D3D12_DESCRIPTOR_HEAP_TYPE heapType,
-        UINT count = 1);
+        UINT count = 1,
+        bool frameScoped = false);
 
     /**
      * @brief Release an allocation
@@ -226,6 +236,9 @@ public:
      * @brief Get a descriptor heap by type
      */
     DX12DescriptorHeap* GetHeap(D3D12_DESCRIPTOR_HEAP_TYPE heapType) const;
+    bool GetStatistics(
+        D3D12_DESCRIPTOR_HEAP_TYPE heapType,
+        DX12DescriptorAllocator::Statistics& stats) const;
 
     /**
      * @brief Create a new heap with specified parameters

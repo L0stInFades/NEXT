@@ -157,7 +157,8 @@ struct CameraData {
 };
 
 // Global lighting settings
-struct LightingSettings {
+struct alignas(16) LightingSettings {
+    // Keep this structure 16-byte aligned for D3D constant buffer layout compatibility.
     Vec3 ambientColor;   // Ambient light color
     float ambientIntensity;  // Ambient intensity
 
@@ -165,6 +166,7 @@ struct LightingSettings {
     float exposure;      // HDR exposure
     float gamma;         // Gamma correction
     int toneMapMode;     // 0 = None, 1 = ACES, 2 = Reinhard
+    float padding = 0.0f;
 
     LightingSettings()
         : ambientColor(0.1f, 0.1f, 0.1f)
@@ -173,6 +175,9 @@ struct LightingSettings {
         , gamma(2.2f)
         , toneMapMode(1) {}  // Default to ACES
 };
+
+static_assert(sizeof(LightingSettings) % 16 == 0,
+              "LightingSettings must be 16-byte aligned for D3D constant buffers");
 
 // Complete Lighting Scene
 // All lights in one place for easy management

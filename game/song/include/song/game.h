@@ -40,13 +40,14 @@ private:
 
     void HandleInput(float deltaTime);
     void UpdateGame(float deltaTime);
-    void Render();
+    void Render(float deltaTime);
     void RunJobSystemSelfTest();
     void RunAssetSystemTest();
     void RunECSSelfTest();
 
     GameOptions options_;
     bool running_;
+    bool initialized_ = false;
     Next::Window* window_ = nullptr;
     Next::Renderer* renderer_ = nullptr;
     Next::Input* input_ = nullptr;

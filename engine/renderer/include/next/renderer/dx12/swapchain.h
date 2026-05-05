@@ -34,7 +34,7 @@ public:
     D3D12_CPU_DESCRIPTOR_HANDLE GetCurrentRenderTargetView() const;
 
     // Present
-    void Present(UINT syncInterval = 1, UINT flags = 0);
+    bool Present(UINT syncInterval = 1, UINT flags = 0);
 
     // Resize
     bool Resize(UINT width, UINT height);

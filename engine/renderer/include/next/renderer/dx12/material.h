@@ -22,8 +22,6 @@ public:
 
     // Initialization
     bool Initialize(DX12Device* device, DX12DescriptorHeapManager* heapManager);
-    // Legacy initialization for backward compatibility with renderer
-    bool Initialize(DX12Device* device, DX12CBVSRVUAVHeap* srvHeap);
     void Shutdown();
 
     // Material Parameters
@@ -63,7 +61,7 @@ public:
     bool HasAOMap() const { return material_.useAOMap(); }
 
 private:
-    // Helper method to get SRV heap (supports both legacy and heap manager modes)
+    // Helper method to get SRV heap from the descriptor manager
     DX12DescriptorHeap* GetSRVHeapForLoading();
     PBRMaterial material_;
 
@@ -82,10 +80,8 @@ private:
 
     DX12Device* device_;
     DX12DescriptorHeapManager* heapManager_;
-    DX12CBVSRVUAVHeap* legacyHeap_;  // For backward compatibility
 
     bool initialized_;
-    bool useLegacyMode_;  // True if using legacy heap instead of heap manager
 };
 
 } // namespace Next

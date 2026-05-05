@@ -8,7 +8,7 @@
 
 namespace Next {
 
-// DX12 Command List Wrapper (ID3D12GraphicsCommandList4 for DX12U)
+// DX12 Command List Wrapper (ID3D12GraphicsCommandList6 for DX12U mesh dispatch)
 class DX12CommandList {
 public:
     DX12CommandList();
@@ -21,12 +21,12 @@ public:
     void Shutdown();
 
     // Command List Access
-    ID3D12GraphicsCommandList4* GetCommandList() const { return commandList_.Get(); }
+    ID3D12GraphicsCommandList6* GetCommandList() const { return commandList_.Get(); }
     ID3D12CommandAllocator* GetAllocator() const { return currentAllocator_.Get(); }
 
     // Recording
-    void Reset(uint32_t frameIndex);
-    void Close();
+    bool Reset(uint32_t frameIndex);
+    bool Close();
 
     // Render Target
     void OMSetRenderTargets(
@@ -61,24 +61,14 @@ public:
 
     // DX12U Specific
     void RSSetShadingRate(D3D12_SHADING_RATE shadingRate, D3D12_SHADING_RATE_COMBINER combiner);
-
-    // Mesh Shader support (requires DX12U with ID3D12GraphicsCommandList4)
-    // This is a placeholder - mesh shaders require a specialized PSO setup
-    void SetMeshShaders(const D3D12_SHADER_BYTECODE* meshShader, const D3D12_SHADER_BYTECODE* amplificationShader) {
-        if (commandList_ && meshShader) {
-            auto cmdList4 = static_cast<ID3D12GraphicsCommandList4*>(commandList_.Get());
-            // Mesh shaders require setting a specialized pipeline state object
-            // The PSO must be created with mesh shader shaders beforehand
-            // cmdList4->SetPipelineState1(meshShaderPSO);
-        }
-    }
+    void DispatchMesh(UINT threadGroupCountX, UINT threadGroupCountY, UINT threadGroupCountZ);
 
     // Viewport and Scissor
     void RSSetViewports(UINT numViewports, const D3D12_VIEWPORT* viewports);
     void RSSetScissorRects(UINT numRects, const D3D12_RECT* rects);
 
 private:
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> commandList_;  // DX12U
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> commandList_;  // DX12U
     std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> allocators_;
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> currentAllocator_;
     D3D12_COMMAND_LIST_TYPE type_;

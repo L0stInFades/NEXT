@@ -92,6 +92,15 @@ float3 EvaluateSH(float3 sh[9], float3 dir)
     return result;
 }
 
+float3 AnalyticProbeRadiance(float3 dir)
+{
+    float up = saturate(dir.z * 0.5 + 0.5);
+    float horizon = pow(1.0 - up, 2.0);
+    float3 sky = lerp(float3(0.08, 0.10, 0.13), float3(0.48, 0.58, 0.78), up);
+    float3 groundBounce = float3(0.18, 0.14, 0.10) * horizon;
+    return sky + groundBounce;
+}
+
 //=============================================================================
 // Probe Baking Compute Shader
 //=============================================================================
@@ -100,36 +109,55 @@ float3 EvaluateSH(float3 sh[9], float3 dir)
 void CSBakeProbes(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID)
 {
     int probeIndex = DTid.x;
-    int rayIndex = DTid.y;
+    if (RaysPerProbe <= 0)
+    {
+        return;
+    }
 
-    // Generate ray direction (Hammersley sequence for good distribution)
-    float i = (float)rayIndex;
-    float numRays = (float)RaysPerProbe;
-    float2 hammersley = float2(i / numRays, fract(i * 0.5 + 0.5));
+    float3 shAccum[9];
+    [unroll]
+    for (int coeff = 0; coeff < 9; ++coeff)
+    {
+        shAccum[coeff] = 0.0;
+    }
 
-    float phi = 2.0 * 3.14159 * hammersley.y;
-    float cosTheta = 1.0 - hammersley.x;
-    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    for (int rayIndex = 0; rayIndex < RaysPerProbe; ++rayIndex)
+    {
+        float i = (float)rayIndex;
+        float numRays = (float)RaysPerProbe;
+        float2 hammersley = float2(i / numRays, frac(i * 0.5 + 0.5));
 
-    float3 rayDir = float3(
-        cos(phi) * sinTheta,
-        sin(phi) * sinTheta,
-        cosTheta
-    );
+        float phi = 2.0 * 3.14159 * hammersley.y;
+        float cosTheta = 1.0 - hammersley.x;
+        float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
 
-    // Trace ray and get radiance
-    // TODO: Implement ray tracing or screen-space sampling
-    float3 radiance = float3(0.0, 0.0, 0.0);
+        float3 rayDir = normalize(float3(
+            cos(phi) * sinTheta,
+            sin(phi) * sinTheta,
+            cosTheta
+        ));
+        float3 radiance = AnalyticProbeRadiance(rayDir);
 
-    // For now, sample cubemap
-    // TODO: Proper cubemap sampling
-    radiance = float3(0.5, 0.5, 0.6); // Placeholder sky color
+        float x = rayDir.x;
+        float y = rayDir.y;
+        float z = rayDir.z;
+        shAccum[0] += radiance * SH_C0;
+        shAccum[1] += radiance * (SH_C1 * y);
+        shAccum[2] += radiance * (SH_C1 * z);
+        shAccum[3] += radiance * (SH_C1 * x);
+        shAccum[4] += radiance * (SH_C2_0 * x * y);
+        shAccum[5] += radiance * (SH_C2_1 * (3.0 * z * z - 1.0));
+        shAccum[6] += radiance * (SH_C2_0 * y * z);
+        shAccum[7] += radiance * (SH_C2_2 * (x * x - y * y));
+        shAccum[8] += radiance * (SH_C2_2 * x * z);
+    }
 
-    // Project onto SH
-    float3 shContribution = ProjectSH(rayDir, radiance);
-
-    // Accumulate into shared memory
-    // TODO: Implement proper accumulation
+    float weight = 4.0 * 3.14159 / (float)RaysPerProbe;
+    [unroll]
+    for (int coeff = 0; coeff < 9; ++coeff)
+    {
+        SHCoefficients[probeIndex * 9 + coeff] = float4(shAccum[coeff] * weight, 1.0);
+    }
 }
 
 //=============================================================================
@@ -154,9 +182,9 @@ float4 PSEvaluateProbes(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_
 
     // Get world position
     float depth = DepthBuffer.Sample(SamplerLinear, uv).r;
-    // TODO: Reconstruct world position from depth
-
-    float3 worldPos = CameraPos; // Placeholder
+    float2 ndc = uv * 2.0 - 1.0;
+    float linearDepth = max(depth * MaxBlendDistance, 0.001);
+    float3 worldPos = CameraPos + float3(ndc.x * linearDepth, -ndc.y * linearDepth, linearDepth);
     float3 irradiance = float3(0.0, 0.0, 0.0);
     float totalWeight = 0.0;
 
@@ -202,7 +230,10 @@ float4 PSEvaluateProbes(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_
 
 float4 PSVisualizeProbes(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
-    // Visualize probe positions
-    // TODO: Implement sphere rendering for each probe
-    return float4(0.0, 1.0, 0.0, 1.0);
+    float2 p = uv * 2.0 - 1.0;
+    float r = length(p);
+    float sphere = smoothstep(0.55, 0.42, r);
+    float rim = smoothstep(0.62, 0.54, r) * (1.0 - sphere);
+    float3 color = float3(0.08, 0.95, 0.42) * sphere + float3(0.9, 1.0, 0.55) * rim;
+    return float4(color, max(sphere, rim));
 }

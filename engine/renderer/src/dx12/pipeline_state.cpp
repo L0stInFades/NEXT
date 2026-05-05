@@ -18,7 +18,10 @@ bool DX12PipelineState::Initialize(
     DX12Shader* pixelShader,
     const std::vector<InputElementDesc>& inputLayout,
     DXGI_FORMAT renderTargetFormat,
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE primitiveTopology) {
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE primitiveTopology,
+    D3D12_FILL_MODE fillMode,
+    bool depthEnable,
+    DXGI_FORMAT depthStencilFormat) {
 
     if (!device || !device->GetDevice()) {
         NEXT_LOG_ERROR("Invalid device for PSO");
@@ -29,6 +32,8 @@ bool DX12PipelineState::Initialize(
         NEXT_LOG_ERROR("Invalid root signature or shaders");
         return false;
     }
+
+    Shutdown();
 
     NEXT_LOG_INFO("Creating Pipeline State Object...");
 
@@ -66,6 +71,10 @@ bool DX12PipelineState::Initialize(
     // Debug: Check Root Signature compatibility
     ID3D12RootSignature* rs = rootSignature->GetRootSignature();
     NEXT_LOG_DEBUG("Root Signature: 0x%p", rs);
+    if (!rs) {
+        NEXT_LOG_ERROR("Root signature is invalid");
+        return false;
+    }
 
     // Create pipeline state stream description
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -89,7 +98,7 @@ bool DX12PipelineState::Initialize(
 
     // Rasterizer state
     D3D12_RASTERIZER_DESC& rasterDesc = psoDesc.RasterizerState;
-    rasterDesc.FillMode = D3D12_FILL_MODE_SOLID;
+    rasterDesc.FillMode = fillMode;
     rasterDesc.CullMode = D3D12_CULL_MODE_BACK;
     rasterDesc.FrontCounterClockwise = FALSE;
     rasterDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
@@ -103,7 +112,7 @@ bool DX12PipelineState::Initialize(
 
     // Depth stencil state
     D3D12_DEPTH_STENCIL_DESC& depthDesc = psoDesc.DepthStencilState;
-    depthDesc.DepthEnable = FALSE;  // Disable depth for triangle demo
+    depthDesc.DepthEnable = depthEnable ? TRUE : FALSE;
     depthDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     depthDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
     depthDesc.StencilEnable = FALSE;
@@ -126,6 +135,7 @@ bool DX12PipelineState::Initialize(
     psoDesc.PrimitiveTopologyType = primitiveTopology;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = renderTargetFormat;
+    psoDesc.DSVFormat = depthEnable ? depthStencilFormat : DXGI_FORMAT_UNKNOWN;
     psoDesc.SampleDesc.Count = 1;
 
     // Create PSO

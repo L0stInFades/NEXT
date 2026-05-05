@@ -2,6 +2,40 @@
 #include "next/foundation/logger.h"
 #include <algorithm>
 
+namespace {
+
+float CalculateUsagePercent(UINT total, UINT used) {
+    if (total == 0) {
+        return 0.0f;
+    }
+    return static_cast<float>(used) * 100.0f / static_cast<float>(total);
+}
+
+void LogDescriptorAllocationPressure(
+    const char* heapName,
+    UINT total,
+    UINT used,
+    UINT freeBlocks,
+    UINT allocationCount) {
+    const float usagePercent = CalculateUsagePercent(total, used);
+    if (usagePercent < 90.0f) {
+        return;
+    }
+
+    const UINT freeDescriptors = total > used ? total - used : 0;
+    NEXT_LOG_WARNING(
+        "%s descriptor heap is under pressure (%.1f%% used, %u/%u allocated, %u free blocks, %u allocations)",
+        heapName, usagePercent, used, total, freeBlocks, allocationCount);
+
+    if (freeDescriptors <= 16) {
+        NEXT_LOG_WARNING(
+            "%s descriptor heap is critically low: only %u free descriptors remain",
+            heapName, freeDescriptors);
+    }
+}
+
+}
+
 namespace Next {
 
 //=============================================================================
@@ -29,7 +63,7 @@ bool DX12DescriptorAllocator::Initialize(
     UINT numDescriptors,
     UINT numFramesInFlight) {
 
-    if (!device || !heap) {
+    if (!device || !device->GetDevice() || !heap || !heap->GetHeap()) {
         NEXT_LOG_ERROR("Invalid device or heap for descriptor allocator");
         return false;
     }
@@ -38,6 +72,14 @@ bool DX12DescriptorAllocator::Initialize(
         NEXT_LOG_ERROR("Invalid descriptor size or count");
         return false;
     }
+
+    if (numDescriptors > heap->GetNumDescriptors()) {
+        NEXT_LOG_ERROR("Descriptor allocator count exceeds heap capacity: %u > %u",
+                       numDescriptors, heap->GetNumDescriptors());
+        return false;
+    }
+
+    Shutdown();
 
     device_ = device;
     heap_ = heap;
@@ -79,7 +121,7 @@ void DX12DescriptorAllocator::Shutdown() {
     NEXT_LOG_INFO("Descriptor allocator shutdown complete");
 }
 
-DescriptorAllocation DX12DescriptorAllocator::Allocate(UINT count) {
+DescriptorAllocation DX12DescriptorAllocator::Allocate(UINT count, bool frameScoped) {
     DescriptorAllocation allocation;
 
     if (!initialized_) {
@@ -94,10 +136,25 @@ DescriptorAllocation DX12DescriptorAllocator::Allocate(UINT count) {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (!heap_ || !heap_->GetHeap()) {
+        NEXT_LOG_ERROR("Cannot allocate: descriptor heap is invalid");
+        return allocation;
+    }
+
     // Find a free block
     int blockIndex = FindFreeBlock(count);
     if (blockIndex < 0) {
+        UINT allocated = 0;
+        for (const auto& alloc : allocations_) {
+            allocated += alloc.count;
+        }
+        const float usagePercent = CalculateUsagePercent(numDescriptors_, allocated);
+        const UINT freeDescriptors = numDescriptors_ > allocated ? numDescriptors_ - allocated : 0;
+
         NEXT_LOG_ERROR("Failed to allocate %u descriptors: out of descriptor space", count);
+        NEXT_LOG_ERROR(
+            "DX12 descriptor allocator state: %.1f%% used, %u used, %u free, free blocks: %zu",
+            usagePercent, allocated, freeDescriptors, freeBlocks_.size());
         return allocation;
     }
 
@@ -105,14 +162,26 @@ DescriptorAllocation DX12DescriptorAllocator::Allocate(UINT count) {
     FreeBlock& block = freeBlocks_[blockIndex];
 
     // Fill in allocation
+    UINT allocationOffset = block.offset;
     allocation.heapIndex = 0;  // We only support single heap for now
-    allocation.offset = block.offset;
+    allocation.offset = allocationOffset;
     allocation.count = count;
     allocation.frameIndex = currentFrame_;
+    allocation.frameScoped = frameScoped;
 
     // Get CPU and GPU handles
     allocation.cpuHandle = heap_->GetCPUDescriptorHandle(block.offset);
     allocation.gpuHandle = heap_->GetGPUDescriptorHandle(block.offset);
+    if (allocation.cpuHandle.ptr == 0) {
+        NEXT_LOG_ERROR("Failed to allocate %u descriptors: invalid CPU descriptor handle at offset %u",
+                       count, block.offset);
+        return DescriptorAllocation();
+    }
+    if (heap_->IsShaderVisible() && allocation.gpuHandle.ptr == 0) {
+        NEXT_LOG_ERROR("Failed to allocate %u descriptors: invalid GPU descriptor handle at offset %u",
+                       count, block.offset);
+        return DescriptorAllocation();
+    }
 
     // Update free block
     if (block.count == count) {
@@ -127,7 +196,18 @@ DescriptorAllocation DX12DescriptorAllocator::Allocate(UINT count) {
     // Track allocation
     allocations_.push_back(allocation);
 
-    NEXT_LOG_DEBUG("Allocated %u descriptors at offset %u", count, block.offset);
+    UINT allocatedNow = 0;
+    for (const auto& alloc : allocations_) {
+        allocatedNow += alloc.count;
+    }
+    LogDescriptorAllocationPressure(
+        "DX12 descriptor allocator",
+        numDescriptors_,
+        allocatedNow,
+        static_cast<UINT>(freeBlocks_.size()),
+        static_cast<UINT>(allocations_.size()));
+
+    NEXT_LOG_DEBUG("Allocated %u descriptors at offset %u", count, allocationOffset);
 
     return allocation;
 }
@@ -143,19 +223,42 @@ void DX12DescriptorAllocator::Release(const DescriptorAllocation& allocation) {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Add to free list
-    freeBlocks_.push_back(FreeBlock(allocation.offset, allocation.count));
+    if (allocation.offset >= numDescriptors_ || allocation.count > numDescriptors_ - allocation.offset) {
+        NEXT_LOG_WARNING("Ignoring invalid descriptor release: offset=%u count=%u capacity=%u",
+                         allocation.offset, allocation.count, numDescriptors_);
+        return;
+    }
 
-    // Remove from allocations list
-    auto it = std::remove_if(allocations_.begin(), allocations_.end(),
+    auto allocationIt = std::find_if(allocations_.begin(), allocations_.end(),
         [&allocation](const DescriptorAllocation& alloc) {
             return alloc.offset == allocation.offset &&
                    alloc.count == allocation.count;
         });
-    allocations_.erase(it, allocations_.end());
+    if (allocationIt == allocations_.end()) {
+        NEXT_LOG_WARNING("Ignoring descriptor release for unknown allocation: offset=%u count=%u",
+                         allocation.offset, allocation.count);
+        return;
+    }
+
+    // Add to free list
+    freeBlocks_.push_back(FreeBlock(allocation.offset, allocation.count));
+
+    // Remove from allocations list
+    allocations_.erase(allocationIt);
 
     // Coalesce adjacent blocks
     CoalesceFreeBlocks();
+
+    UINT allocated = 0;
+    for (const auto& alloc : allocations_) {
+        allocated += alloc.count;
+    }
+    LogDescriptorAllocationPressure(
+        "DX12 descriptor allocator",
+        numDescriptors_,
+        allocated,
+        static_cast<UINT>(freeBlocks_.size()),
+        static_cast<UINT>(allocations_.size()));
 
     NEXT_LOG_DEBUG("Released %u descriptors at offset %u", allocation.count, allocation.offset);
 }
@@ -167,11 +270,15 @@ void DX12DescriptorAllocator::ReleaseFrameAllocations(uint32_t frameIndex) {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Release all allocations from the specified frame
     for (auto it = allocations_.begin(); it != allocations_.end(); ) {
-        // Calculate frame age
-        uint32_t frameAge = (currentFrame_ - it->frameIndex);
-        if (frameAge >= numFramesInFlight_) {
+        if (!it->frameScoped) {
+            ++it;
+            continue;
+        }
+
+        // Use modular subtraction to keep behavior correct across frame index wraparound.
+        const uint32_t age = frameIndex - it->frameIndex;
+        if (age >= numFramesInFlight_) {
             // Add to free list
             freeBlocks_.push_back(FreeBlock(it->offset, it->count));
 
@@ -186,6 +293,26 @@ void DX12DescriptorAllocator::ReleaseFrameAllocations(uint32_t frameIndex) {
 
     // Coalesce adjacent blocks
     CoalesceFreeBlocks();
+
+    UINT allocated = 0;
+    for (const auto& alloc : allocations_) {
+        allocated += alloc.count;
+    }
+    LogDescriptorAllocationPressure(
+        "DX12 descriptor allocator",
+        numDescriptors_,
+        allocated,
+        static_cast<UINT>(freeBlocks_.size()),
+        static_cast<UINT>(allocations_.size()));
+}
+
+void DX12DescriptorAllocator::SetCurrentFrame(uint32_t frameIndex) {
+    if (!initialized_) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    currentFrame_ = frameIndex;
 }
 
 void DX12DescriptorAllocator::Reset() {
@@ -290,10 +417,12 @@ DX12DescriptorHeapManager::~DX12DescriptorHeapManager() {
 }
 
 bool DX12DescriptorHeapManager::Initialize(DX12Device* device, UINT numFramesInFlight) {
-    if (!device) {
+    if (!device || !device->GetDevice()) {
         NEXT_LOG_ERROR("Invalid device for descriptor heap manager");
         return false;
     }
+
+    Shutdown();
 
     device_ = device;
     numFramesInFlight_ = numFramesInFlight > 0 ? numFramesInFlight : 2;
@@ -337,7 +466,8 @@ void DX12DescriptorHeapManager::Shutdown() {
 
 DescriptorAllocation DX12DescriptorHeapManager::Allocate(
     D3D12_DESCRIPTOR_HEAP_TYPE heapType,
-    UINT count) {
+    UINT count,
+    bool frameScoped) {
 
     DescriptorAllocation allocation;
 
@@ -358,7 +488,7 @@ DescriptorAllocation DX12DescriptorHeapManager::Allocate(
         return allocation;
     }
 
-    return allocator->Allocate(count);
+    return allocator->Allocate(count, frameScoped);
 }
 
 void DX12DescriptorHeapManager::Release(
@@ -480,6 +610,27 @@ bool DX12DescriptorHeapManager::CreateHeap(
     return true;
 }
 
+bool DX12DescriptorHeapManager::GetStatistics(
+    D3D12_DESCRIPTOR_HEAP_TYPE heapType,
+    DX12DescriptorAllocator::Statistics& stats) const {
+
+    if (!initialized_) {
+        return false;
+    }
+
+    if (heapType >= D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES) {
+        return false;
+    }
+
+    DX12DescriptorAllocator* allocator = allocators_[heapType];
+    if (!allocator) {
+        return false;
+    }
+
+    stats = allocator->GetStatistics();
+    return true;
+}
+
 void DX12DescriptorHeapManager::AdvanceFrame() {
     if (!initialized_) {
         return;
@@ -487,8 +638,13 @@ void DX12DescriptorHeapManager::AdvanceFrame() {
 
     currentFrame_++;
 
-    // Release old frame allocations
-    ReleaseFrameAllocations(currentFrame_ - numFramesInFlight_);
+    for (int i = 0; i < D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES; ++i) {
+        if (allocators_[i]) {
+            allocators_[i]->SetCurrentFrame(currentFrame_);
+        }
+    }
+    // Release allocations that are older than the configured frame window.
+    ReleaseFrameAllocations(currentFrame_);
 
     // Extremely chatty at runtime; keep at trace level.
     NEXT_LOG_TRACE("Advanced to frame %u", currentFrame_);
@@ -518,10 +674,23 @@ bool DX12SingleFrameAllocator::Initialize(
     UINT descriptorSize,
     UINT numDescriptors) {
 
-    if (!device || !heap) {
+    if (!device || !device->GetDevice() || !heap || !heap->GetHeap()) {
         NEXT_LOG_ERROR("Invalid device or heap for single-frame allocator");
         return false;
     }
+
+    if (descriptorSize == 0 || numDescriptors == 0) {
+        NEXT_LOG_ERROR("Invalid descriptor size or count for single-frame allocator");
+        return false;
+    }
+
+    if (numDescriptors > heap->GetNumDescriptors()) {
+        NEXT_LOG_ERROR("Single-frame allocator count exceeds heap capacity: %u > %u",
+                       numDescriptors, heap->GetNumDescriptors());
+        return false;
+    }
+
+    Shutdown();
 
     device_ = device;
     heap_ = heap;
@@ -563,7 +732,12 @@ DescriptorAllocation DX12SingleFrameAllocator::Allocate(UINT count) {
         return allocation;
     }
 
-    if (currentOffset_ + count > numDescriptors_) {
+    if (!heap_ || !heap_->GetHeap()) {
+        NEXT_LOG_ERROR("Cannot allocate: single-frame descriptor heap is invalid");
+        return allocation;
+    }
+
+    if (count > numDescriptors_ || currentOffset_ > numDescriptors_ - count) {
         NEXT_LOG_ERROR("Single-frame allocator out of memory: need %u, have %u",
                       count, numDescriptors_ - currentOffset_);
         outOfMemory_ = true;
@@ -579,6 +753,16 @@ DescriptorAllocation DX12SingleFrameAllocator::Allocate(UINT count) {
     // Get handles
     allocation.cpuHandle = heap_->GetCPUDescriptorHandle(currentOffset_);
     allocation.gpuHandle = heap_->GetGPUDescriptorHandle(currentOffset_);
+    if (allocation.cpuHandle.ptr == 0) {
+        NEXT_LOG_ERROR("Single-frame allocator returned invalid CPU descriptor handle at offset %u",
+                       currentOffset_);
+        return DescriptorAllocation();
+    }
+    if (heap_->IsShaderVisible() && allocation.gpuHandle.ptr == 0) {
+        NEXT_LOG_ERROR("Single-frame allocator returned invalid GPU descriptor handle at offset %u",
+                       currentOffset_);
+        return DescriptorAllocation();
+    }
 
     // Advance offset
     currentOffset_ += count;

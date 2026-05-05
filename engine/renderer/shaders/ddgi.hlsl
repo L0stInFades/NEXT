@@ -59,7 +59,7 @@ float3 ReconstructViewPos(float2 uv, float depth)
     return viewPos.xyz / viewPos.w;
 }
 
-float3 ViewToWorld(float3 viewPos)
+float3 TransformViewToWorld(float3 viewPos)
 {
     return mul((float3x3)ViewToWorld, viewPos);
 }
@@ -86,6 +86,15 @@ float3 Hash3D(float3 p)
     ) * 2.0 - 1.0;
 }
 
+float3 AnalyticProbeRadiance(float3 dir)
+{
+    float up = saturate(dir.z * 0.5 + 0.5);
+    float horizon = pow(1.0 - up, 2.0);
+    float3 sky = lerp(float3(0.08, 0.10, 0.13), float3(0.48, 0.58, 0.78), up);
+    float3 bounce = float3(0.18, 0.14, 0.10) * horizon;
+    return sky + bounce;
+}
+
 //=============================================================================
 // DDGI Update Pass
 //=============================================================================
@@ -103,11 +112,19 @@ float3 GetProbeSH(int3 probeIndex, float3 normal)
     if (any(probeIndex < 0) || any(probeIndex >= ProbeCounts))
         return float3(0.0, 0.0, 0.0);
 
-    // Sample probe data (simplified)
-    float4 shData = ProbeSH.SampleLevel(SamplerLinear, float3(probeIndex) / ProbeCounts, 0);
+    float3 probeCounts = max(float3(ProbeCounts), float3(1.0, 1.0, 1.0));
+    float3 uvw = (float3(probeIndex) + 0.5) / probeCounts;
+    float3 n = normalize(normal);
+    float3 directionalStep = n / probeCounts;
 
-    // Evaluate SH (simplified - just use band 0 for now)
-    return shData.rgb * 0.282095f; // SH_C0
+    float3 center = ProbeSH.SampleLevel(SamplerLinear, uvw, 0).rgb;
+    float3 forward = ProbeSH.SampleLevel(SamplerLinear, saturate(uvw + directionalStep), 0).rgb;
+    float3 backward = ProbeSH.SampleLevel(SamplerLinear, saturate(uvw - directionalStep), 0).rgb;
+
+    float3 firstOrder = (forward - backward) * 0.5;
+    float cosineLobe = saturate(n.z * 0.5 + 0.5);
+    float3 irradiance = center * 0.282095f + firstOrder * 0.488603f * cosineLobe;
+    return max(irradiance, 0.0);
 }
 
 // Get irradiance from nearby probes
@@ -162,7 +179,7 @@ void CSUpdateProbes(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID)
 
     // Reconstruct world position
     float3 viewPos = ReconstructViewPos(uv, depth);
-    float3 worldPos = ViewToWorld(viewPos);
+    float3 worldPos = TransformViewToWorld(viewPos);
 
     // Get probe irradiance
     float3 irradiance = GetProbeIrradiance(worldPos, normal);
@@ -178,7 +195,8 @@ void CSUpdateProbes(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID)
 float4 PSRenderDDGI(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
     // Get current frame irradiance
-    float3 irradiance = OutputIrradiance[svPos.xy].rgb;
+    uint2 pixel = uint2(svPos.xy);
+    float3 irradiance = OutputIrradiance[pixel].rgb;
 
     // Get history
     float3 historyIrradiance = HistoryIrradiance.Sample(SamplerLinear, uv).rgb;
@@ -216,7 +234,12 @@ void CSGenerateProbeRays(uint3 DTid : SV_DispatchThreadID)
     int probeIndex = DTid.x;
 
     // Initialize SH accumulator
-    float3 shAccum[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    float3 shAccum[9];
+    [unroll]
+    for (int coeff = 0; coeff < 9; ++coeff)
+    {
+        shAccum[coeff] = 0.0;
+    }
 
     float3 probePos = ProbePositions[probeIndex];
 
@@ -238,9 +261,7 @@ void CSGenerateProbeRays(uint3 DTid : SV_DispatchThreadID)
             cosTheta
         );
 
-        // Trace ray and get radiance
-        // TODO: Implement actual ray tracing
-        float3 radiance = float3(0.5, 0.5, 0.6); // Placeholder
+        float3 radiance = AnalyticProbeRadiance(rayDir);
 
         // Project onto SH
         float x = rayDir.x;
@@ -284,8 +305,9 @@ void CSUpdateProbeDepth(uint3 DTid : SV_DispatchThreadID)
 
     float depth = 0.0;
 
-    // Sample scene depth along probe view direction
-    // TODO: Implement actual depth sampling
+    float3 normalizedCoord = (float3(probeCoord) + 0.5) / max(float3(ProbeCounts), 1.0);
+    float sceneDepth = DepthTexture.SampleLevel(SamplerLinear, normalizedCoord.xy, 0).r;
+    depth = saturate(sceneDepth + normalizedCoord.z * DepthBias);
 
     OutputProbeDepth[probeCoord] = depth;
 }

@@ -5,6 +5,7 @@ struct PSInput {
     float4 position : SV_POSITION;
     float3 worldPos : WORLD_POSITION;
     float3 normal : NORMAL;
+    float3 tangent : TANGENT;
     float2 texcoord : TEXCOORD;
 };
 
@@ -53,6 +54,7 @@ struct LightingSettings {
     float exposure;
     float gamma;
     int toneMapMode;
+    int debugViewMode;
 };
 
 // ====== Constant Buffers ======
@@ -94,9 +96,6 @@ bool HasTexture(uint bit) {
 }
 
 // ====== PBR Helper Functions ======
-
-// Simplified version - no textures for initial testing
-// We'll use material parameters directly
 
 // Normal Distribution Function (Trowbridge-Reitz GGX)
 float DistributionGGX(float3 N, float3 H, float roughness) {
@@ -184,9 +183,20 @@ float3 ToneMapNone(float3 color) {
     return clamp(color, 0.0, 1.0);
 }
 
+void ResolveBasis(PSInput input, out float3 N, out float3 T, out float3 B) {
+    N = normalize(input.normal);
+    T = normalize(input.tangent - N * dot(input.tangent, N));
+    B = normalize(cross(N, T));
+
+    if (HasTexture(NORMAL_FLAG_BIT)) {
+        float3 tangentNormal = normalMap.Sample(sampler0, input.texcoord).xyz * 2.0 - 1.0;
+        N = normalize(tangentNormal.x * T + tangentNormal.y * B + tangentNormal.z * N);
+    }
+}
+
 // ====== Main Pixel Shader ======
 float4 main(PSInput input) : SV_TARGET {
-    // Get material parameters (using direct values, no textures for now)
+    // Get material parameters
     float3 albedo = material.albedo;
     float metallic = material.metallic;
     float roughness = material.roughnessAndAO.x;  // roughness is in x component
@@ -196,8 +206,6 @@ float4 main(PSInput input) : SV_TARGET {
         float4 texColor = albedoMap.Sample(sampler0, input.texcoord);
         albedo = texColor.rgb;
     }
-
-    // Normal map sampling is intentionally omitted for now (tangent space not wired).
 
     if (HasTexture(METALLIC_FLAG_BIT)) {
         metallic = metallicMap.Sample(sampler0, input.texcoord).r;
@@ -211,8 +219,36 @@ float4 main(PSInput input) : SV_TARGET {
         ao = aoMap.Sample(sampler0, input.texcoord).r;
     }
 
-    // Normal mapping (disabled for now - requires tangent/bitangent)
-    float3 N = normalize(input.normal);
+    float3 N;
+    float3 T;
+    float3 B;
+    ResolveBasis(input, N, T, B);
+
+    if (settings.debugViewMode == 2) {
+        return float4(N * 0.5 + 0.5, 1.0);
+    } else if (settings.debugViewMode == 3) {
+        return float4(T * 0.5 + 0.5, 1.0);
+    } else if (settings.debugViewMode == 4) {
+        return float4(B * 0.5 + 0.5, 1.0);
+    } else if (settings.debugViewMode == 5) {
+        float depth = saturate(input.position.z);
+        return float4(depth, depth, depth, 1.0);
+    } else if (settings.debugViewMode == 6) {
+        return float4(roughness, roughness, roughness, 1.0);
+    } else if (settings.debugViewMode == 7) {
+        return float4(metallic, metallic, metallic, 1.0);
+    } else if (settings.debugViewMode == 8) {
+        return float4(albedo, 1.0);
+    } else if (settings.debugViewMode == 9) {
+        return float4(ao, ao, ao, 1.0);
+    } else if (settings.debugViewMode == 10) {
+        return float4(0.5, 0.5, 0.0, 1.0);
+    } else if (settings.debugViewMode == 11) {
+        return float4(frac(input.texcoord), 0.0, 1.0);
+    } else if (settings.debugViewMode == 12) {
+        float edgeDensity = saturate((length(ddx(input.worldPos)) + length(ddy(input.worldPos))) * 0.5);
+        return float4(edgeDensity, 1.0 - edgeDensity, 0.05, 1.0);
+    }
 
     // View direction
     float3 V = normalize(camera.position - input.worldPos);

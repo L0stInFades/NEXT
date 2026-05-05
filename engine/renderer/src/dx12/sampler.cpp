@@ -18,8 +18,26 @@ bool DX12Sampler::Initialize(DX12Device* device, DX12DescriptorHeap* samplerHeap
         return false;
     }
 
+    if (!device->GetDevice()) {
+        NEXT_LOG_ERROR("Invalid D3D12 device for sampler initialization");
+        return false;
+    }
+
+    if (!samplerHeap->GetHeap()) {
+        NEXT_LOG_ERROR("Invalid D3D12 sampler heap");
+        return false;
+    }
+
+    if (!samplerHeap->IsShaderVisible()) {
+        NEXT_LOG_ERROR("Sampler heap must be shader-visible");
+        return false;
+    }
+
+    Shutdown();
+
     device_ = device;
     samplerHeap_ = samplerHeap;
+    gpuDescriptorHandle_.ptr = 0;
 
     initialized_ = true;
     return true;
@@ -31,6 +49,11 @@ bool DX12Sampler::Create(D3D12_FILTER filter,
                         D3D12_TEXTURE_ADDRESS_MODE addressW) {
     if (!initialized_) {
         NEXT_LOG_ERROR("Sampler not initialized");
+        return false;
+    }
+
+    if (!samplerHeap_) {
+        NEXT_LOG_ERROR("Sampler heap not initialized");
         return false;
     }
 
@@ -51,8 +74,18 @@ bool DX12Sampler::Create(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
         return false;
     }
 
+    if (!device_ || !device_->GetDevice()) {
+        NEXT_LOG_ERROR("Invalid device for sampler creation");
+        return false;
+    }
+
     if (cpuHandle.ptr == 0) {
         NEXT_LOG_ERROR("Invalid sampler descriptor handle");
+        return false;
+    }
+
+    if (gpuDescriptorHandle_.ptr == 0) {
+        NEXT_LOG_ERROR("Invalid sampler GPU descriptor handle");
         return false;
     }
 

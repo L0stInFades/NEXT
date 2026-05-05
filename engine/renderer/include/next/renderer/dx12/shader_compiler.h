@@ -3,9 +3,17 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cstdint>
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+
+#if defined(_WIN32) && __has_include(<dxcapi.h>)
+#include <dxcapi.h>
+#define NEXT_RENDERER_HAS_DXC 1
+#else
+#define NEXT_RENDERER_HAS_DXC 0
+#endif
 
 namespace Next {
 
@@ -15,7 +23,7 @@ namespace Next {
 
 struct ShaderCompileConfig {
     std::string sourceFile;
-    std::string targetProfile;     // vs_5_1, ps_5_1, cs_5_1, etc.
+    std::string targetProfile;     // vs_5_1, ps_5_1, cs_5_1, ms_6_5, etc.
     std::string entryPoint;
     std::string outputName;         // Optional: name for the compiled bytecode
 
@@ -82,8 +90,9 @@ public:
     // Check if DXC is available (for ray tracing shaders)
     bool IsDXCAvailable() const { return dxcAvailable_; }
 
-    // Check if DXR is available
+    // Runtime DXR support is a device feature, not a shader compiler feature.
     bool IsDXRAvailable() const { return dxrAvailable_; }
+    void SetDeviceDXRSupport(bool available) { dxrAvailable_ = available; }
 
     // Cleanup
     void Shutdown();
@@ -94,9 +103,6 @@ private:
 
     // Try to find and load fxc
     bool LoadFXC();
-
-    // Check for DXR support
-    bool CheckDXRSupport();
 
     // Compile using dxc (DirectX Shader Compiler)
     bool CompileWithDXC(const ShaderCompileConfig& config,
@@ -125,22 +131,13 @@ private:
     void* dxcModule_;
     void* fxcModule_;
 
-    // Function pointers for DXC
-    typedef HRESULT (*DxcCompileFunc)(
-        LPCWSTR pSource, // Source text to compile
-        LPCWSTR pEntryPoint, // Entry point for shader
-        LPCWSTR pTargetProfile, // Target shader profile
-        LPCWSTR pIncludeEnv, // Include environment
-        UINT Flags,             // Compilation flags
-        LPCVOID pDefines,       // Shader defines
-        UINT DefineCount,       // Number of defines
-        LPCWSTR pSourceFilename,   // Optional shader file name
-        UINT* pOutput,           // Pointer to ID3DBlob
-        ID3DBlob** ppErrorMsgs,   // Optional error messages
-        HRESULT* pOutputResult   // HRESULT output
-    );
-
-    DxcCompileFunc DxcCompile;
+#if NEXT_RENDERER_HAS_DXC
+    typedef HRESULT (WINAPI *DxcCreateInstanceProc)(REFCLSID rclsid, REFIID riid, LPVOID* ppv);
+    DxcCreateInstanceProc DxcCreateInstance_;
+    Microsoft::WRL::ComPtr<IDxcUtils> dxcUtils_;
+    Microsoft::WRL::ComPtr<IDxcCompiler3> dxcCompiler_;
+    Microsoft::WRL::ComPtr<IDxcIncludeHandler> dxcIncludeHandler_;
+#endif
 
     // D3DCompile function pointer (from d3dcompiler.h)
     decltype(&D3DCompile) pD3DCompile_;

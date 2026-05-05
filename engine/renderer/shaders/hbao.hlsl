@@ -1,179 +1,88 @@
-//=============================================================================
-// HBAO (Horizon-Based Ambient Occlusion)
-// Based on NVIDIA's HBAO+ algorithm
-//=============================================================================
+Texture2D<float4> DepthTexture : register(t0, space0);
+SamplerState LinearClampSampler : register(s0, space0);
 
-// Constants
-cbuffer HBAOConstants : register(b0)
-{
-    float4x4 Projection;
-    float4x4 InvProjection;
-    float2 OutputSize;
-    float2 InvOutputSize;
+cbuffer HBAOConstants : register(b0, space0) {
+    float radiusPixels;
+    float bias;
+    float stepCount;
+    float power;
+    float invWidth;
+    float invHeight;
+    float depthScale;
+    float padding0;
+};
 
-    // HBAO Parameters
-    float Radius;           // Sampling radius
-    float Bias;             // Bias to reduce self-occlusion
-    int Steps;             // Steps per direction
-    float Power;            // Occlusion power
+struct PSInput {
+    float4 position : SV_POSITION;
+    float2 texcoord : TEXCOORD0;
+};
 
-    float BlurEnabled;
-    float3 Padding;
+float HorizonContribution(float centerDepth, float sampleDepth, float stepRatio) {
+    const float depthDelta = saturate((centerDepth - sampleDepth - bias) * depthScale);
+    const float rangeWeight = saturate(1.0f - abs(centerDepth - sampleDepth) * depthScale * stepRatio);
+    return depthDelta * rangeWeight;
 }
 
-// Textures
-Texture2D<float> DepthTexture : register(t0);
-Texture2D<float3> NormalTexture : register(t1);
-SamplerState SamplerPoint : register(s0);
+float4 PSHBAO(PSInput input) : SV_Target {
+    const float2 uv = saturate(input.texcoord);
+    const float centerDepth = DepthTexture.Sample(LinearClampSampler, uv).r;
 
-// Output
-RWTexture2D<float> OutputAO : register(u0);
-
-//=============================================================================
-// Utility Functions
-//=============================================================================
-
-// Convert to view space
-float3 UVToViewSpace(float2 uv, float depth)
-{
-    // NDC coordinates
-    float4 ndc = float4(uv * 2.0 - 1.0, depth, 1.0);
-    ndc.y = -ndc.y; // Flip for DX
-
-    // Unproject
-    float4 view = mul(InvProjection, ndc);
-    return view.xyz / view.w;
-}
-
-// Get view position at UV
-float3 GetViewPos(float2 uv)
-{
-    float depth = DepthTexture.SampleLevel(SamplerPoint, uv, 0).r;
-    return UVToViewSpace(uv, depth);
-}
-
-// Calculate horizon angle in a direction
-float CalculateHorizonAngle(float2 uv, float3 viewPos, float2 dir, float maxRadius)
-{
-    float horizonAngle = -1.0;
-
-    // March along the direction
-    float stepRadius = maxRadius / Steps;
-    float radius = stepRadius;
-
-    for (int i = 0; i < Steps; ++i)
-    {
-        float2 sampleUV = uv + dir * radius;
-        float3 sampleViewPos = GetViewPos(sampleUV);
-
-        // Calculate angle to horizon
-        float3 direction = sampleViewPos - viewPos;
-        float dist = length(direction.xy);
-        float height = direction.z;
-        float angle = atan2(height, dist);
-
-        // Update maximum horizon angle
-        horizonAngle = max(horizonAngle, angle);
-
-        radius += stepRadius;
+    if (centerDepth >= 0.9999f) {
+        return float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
-    return horizonAngle;
-}
+    const int steps = clamp((int)stepCount, 2, 8);
+    const float2 texel = float2(invWidth, invHeight);
+    const float2 directions[8] = {
+        float2( 1.0f,  0.0f),
+        float2(-1.0f,  0.0f),
+        float2( 0.0f,  1.0f),
+        float2( 0.0f, -1.0f),
+        normalize(float2( 1.0f,  1.0f)),
+        normalize(float2(-1.0f,  1.0f)),
+        normalize(float2( 1.0f, -1.0f)),
+        normalize(float2(-1.0f, -1.0f))
+    };
 
-//=============================================================================
-// HBAO Main Algorithm
-//=============================================================================
+    float occlusion = 0.0f;
+    float totalWeight = 0.0f;
 
-float ComputeHBAO(float2 uv)
-{
-    float3 viewPos = GetViewPos(uv);
+    [unroll]
+    for (int d = 0; d < 8; ++d) {
+        float horizon = 0.0f;
 
-    // Skip sky
-    if (viewPos.z <= 0.001)
-        return 1.0;
+        [loop]
+        for (int s = 1; s <= steps; ++s) {
+            const float stepRatio = (float)s / (float)steps;
+            const float2 sampleUV = saturate(uv + directions[d] * radiusPixels * stepRatio * texel);
+            const float sampleDepth = DepthTexture.Sample(LinearClampSampler, sampleUV).r;
+            horizon = max(horizon, HorizonContribution(centerDepth, sampleDepth, stepRatio));
+        }
 
-    // Get normal
-    float3 normal = NormalTexture.SampleLevel(SamplerPoint, uv, 0).rgb;
-
-    // Calculate maximum radius in screen space
-    float radiusWorld = Radius;
-    float radiusScreen = radiusWorld / viewPos.z;
-
-    // Sample in 4 or 8 directions
-    int numDirections = 4;
-    float totalAO = 0.0;
-
-    for (int i = 0; i < numDirections; ++i)
-    {
-        float angle = (float)i / numDirections * 3.14159 * 2.0;
-
-        float2 dir = float2(cos(angle), sin(angle));
-        dir *= InvOutputSize.y; // Scale by height
-
-        // Calculate horizon angle
-        float h1 = CalculateHorizonAngle(uv, viewPos, dir, radiusScreen);
-
-        // Opposite direction
-        float h2 = CalculateHorizonAngle(uv, viewPos, -dir, radiusScreen);
-
-        // Compute occlusion
-        float ao = acos(min(h1, h2)) - acos(max(h1, h2));
-
-        // Apply bias and power
-        ao = max(0.0, ao + Bias);
-        ao = pow(ao, Power);
-
-        totalAO += ao;
+        const float directionWeight = 1.0f;
+        occlusion += horizon * directionWeight;
+        totalWeight += directionWeight;
     }
 
-    // Normalize
-    totalAO /= numDirections;
-
-    // Convert to ambient occlusion
-    float occlusion = 1.0 - totalAO * 0.5;
-    occlusion = saturate(occlusion);
-
-    return occlusion;
+    occlusion = totalWeight > 0.0f ? occlusion / totalWeight : 0.0f;
+    const float ao = pow(saturate(1.0f - occlusion), max(0.001f, power));
+    return float4(ao, ao, ao, 1.0f);
 }
 
-//=============================================================================
-// Pixel Shader Entry Point
-//=============================================================================
+float4 PSBlur(PSInput input) : SV_Target {
+    const float2 uv = saturate(input.texcoord);
+    const float2 texel = float2(invWidth, invHeight);
+    const float blurRadius = max(1.0f, radiusPixels * 0.125f);
+    const float2 r = texel * blurRadius;
 
-float4 PSHBAO(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
-{
-    float ao = ComputeHBAO(uv);
-
-    OutputAO[svPos.xy] = ao;
-    return ao;
-}
-
-//=============================================================================
-// Blur Shader for HBAO
-//=============================================================================
-
-Texture2D<float> InputAO : register(t2);
-
-float4 PSBlur(float4 svPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
-{
-    // Separable blur (horizontal first)
-    float blurRadius = 2.0;
-    float result = 0.0;
-    float totalWeight = 0.0;
-
-    for (int x = -2; x <= 2; ++x)
-    {
-        float weight = 1.0 - abs(x) / 3.0;
-        float2 offset = float2(x, 0) * InvOutputSize;
-        float sample = InputAO.SampleLevel(SamplerPoint, uv + offset, 0).r;
-
-        result += sample * weight;
-        totalWeight += weight;
-    }
-
-    result /= totalWeight;
-
-    OutputAO[svPos.xy] = result;
-    return result;
+    float ao = DepthTexture.Sample(LinearClampSampler, uv).r * 0.24f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2( r.x, 0.0f)).r * 0.12f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2(-r.x, 0.0f)).r * 0.12f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2(0.0f,  r.y)).r * 0.12f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2(0.0f, -r.y)).r * 0.12f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2( r.x,  r.y)).r * 0.07f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2(-r.x,  r.y)).r * 0.07f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2( r.x, -r.y)).r * 0.07f;
+    ao += DepthTexture.Sample(LinearClampSampler, uv + float2(-r.x, -r.y)).r * 0.07f;
+    return float4(ao, ao, ao, 1.0f);
 }

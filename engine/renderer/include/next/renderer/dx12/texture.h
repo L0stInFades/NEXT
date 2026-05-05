@@ -19,12 +19,13 @@ public:
 
     // Initialization
     bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap);
+    // Prefer the overload with cpuDescriptor so SRVs come from the descriptor allocator.
     bool LoadFromFile(const wchar_t* filename, ID3D12CommandQueue* commandQueue);
     bool LoadFromFile(const wchar_t* filename, ID3D12CommandQueue* commandQueue, D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor);
     void Shutdown();
 
     // Synchronization helper - wait for texture upload to complete
-    void WaitForUpload(ID3D12CommandQueue* commandQueue);
+    bool WaitForUpload(ID3D12CommandQueue* commandQueue);
 
     // Texture Access
     ID3D12Resource* GetResource() const { return texture_.Get(); }

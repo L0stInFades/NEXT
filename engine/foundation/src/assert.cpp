@@ -20,8 +20,10 @@ void AssertHandler(const char* condition, const char* file, int line, const char
         "=========================\n",
         condition, messageStr, file, line);
     
+#ifdef _WIN32
     // Output to debugger (Visual Studio Output window)
     OutputDebugStringA(assertMsg);
+#endif
     
     // Output to stderr for console
     // Note: This is a low-level assert handler, fprintf is acceptable here

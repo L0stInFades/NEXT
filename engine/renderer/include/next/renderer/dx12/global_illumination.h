@@ -4,6 +4,7 @@
 #include "next/renderer/dx12/light_probe.h"
 #include "next/renderer/dx12/device.h"
 #include "next/renderer/dx12/descriptor_heap.h"
+#include "next/renderer/dx12/descriptor_allocator.h"
 #include "next/renderer/dx12/texture.h"
 #include "next/renderer/dx12/shader.h"
 #include "next/renderer/dx12/root_signature.h"
@@ -75,8 +76,11 @@ public:
     ~GlobalIllumination();
 
     // Initialize GI system
-    bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
-                   uint32_t width, uint32_t height);
+    bool Initialize(DX12Device* device,
+                   DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
+                   uint32_t width,
+                   uint32_t height);
 
     // Update GI (call every frame)
     void Update(ID3D12GraphicsCommandList* commandList,
@@ -117,7 +121,9 @@ private:
     bool CreatePipelineStates();
 
     // Render passes
-    void RenderAmbientOcclusion(ID3D12GraphicsCommandList* commandList);
+    void RenderAmbientOcclusion(ID3D12GraphicsCommandList* commandList,
+                                ID3D12Resource* depthBuffer,
+                                ID3D12Resource* normalBuffer);
     void RenderLightProbes(ID3D12GraphicsCommandList* commandList);
     void RenderScreenSpaceGI(ID3D12GraphicsCommandList* commandList);
     void CombineGI(ID3D12GraphicsCommandList* commandList);
@@ -125,6 +131,7 @@ private:
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // Subsystems
     AmbientOcclusionManager aoManager_;
@@ -138,16 +145,19 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> giOutput_;
     Microsoft::WRL::ComPtr<ID3D12Resource> giHistory_;     // Temporal history
     Microsoft::WRL::ComPtr<ID3D12Resource> giHistoryTemp_; // Ping-pong buffer
+    DX12RTVHeap rtvHeap_;
 
     // Pipeline for combining GI techniques
     Microsoft::WRL::ComPtr<ID3D12RootSignature> combineRootSignature_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> combinePSO_;
 
     // Shaders
+    DX12VertexShader combineVertexShader_;
     DX12PixelShader combineShader_;
 
     // Constant buffer for settings
     Microsoft::WRL::ComPtr<ID3D12Resource> settingsBuffer_;
+    DescriptorAllocation combineSrvAllocation_;
 
     // Dimensions
     uint32_t width_;
@@ -174,6 +184,7 @@ public:
 
     // Initialize VXGI
     bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
                    const Vec3& worldMin, const Vec3& worldMax,
                    int voxelResolution);
 
@@ -201,6 +212,7 @@ private:
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // Voxel resources
     Microsoft::WRL::ComPtr<ID3D12Resource> voxelAlbedo_;     // RGB albedo
@@ -216,9 +228,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> voxelizationPSO_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> coneTraceRootSignature_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> coneTracePSO_;
+    DescriptorAllocation voxelUavAllocation_;
+    DescriptorAllocation voxelSrvAllocation_;
+    DX12RTVHeap coneTraceRTVHeap_;
 
     // Shaders
-    DX12GeometryShader voxelizationShader_;
+    DX12VertexShader fullscreenVertexShader_;
+    DX12ComputeShader voxelizationShader_;
     DX12PixelShader coneTraceShader_;
 
     // World bounds
@@ -227,6 +243,8 @@ private:
     int voxelResolution_;
 
     bool initialized_;
+    bool voxelizationEvidenceLogged_;
+    bool coneTraceEvidenceLogged_;
 };
 
 //=============================================================================
@@ -272,6 +290,9 @@ public:
 private:
     // Create probe volume
     bool CreateProbeVolume();
+    bool CreateShaders();
+    bool CreateRootSignatures();
+    bool CreatePipelineStates();
 
     // Device
     DX12Device* device_;
@@ -288,8 +309,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> updatePSO_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> renderRootSignature_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> renderPSO_;
+    DX12RTVHeap renderRTVHeap_;
 
     // Shaders
+    DX12VertexShader fullscreenVertexShader_;
     DX12ComputeShader updateShader_;
     DX12PixelShader renderShader_;
 
@@ -320,6 +343,7 @@ public:
 
     // Initialize RTGI
     bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
                    const RayTracedGISettings& settings);
 
     // Render RTGI
@@ -327,6 +351,19 @@ public:
                ID3D12Resource* depthBuffer,
                ID3D12Resource* normalBuffer,
                ID3D12Resource* output);
+
+    void SetSceneGeometry(ID3D12Resource* vertexBuffer,
+                          uint32_t vertexCount,
+                          uint32_t vertexStride,
+                          ID3D12Resource* indexBuffer,
+                          uint32_t indexCount,
+                          DXGI_FORMAT indexFormat,
+                          bool forceRebuild = true);
+    void SetCamera(const Vec3& position,
+                   const Vec3& target,
+                   const Vec3& up,
+                   float verticalFovRadians,
+                   float aspectRatio);
 
     // Cleanup
     void Shutdown();
@@ -337,18 +374,52 @@ public:
 private:
     // Check DXR support
     bool CheckDXRSupport();
+    bool CreateOutputDescriptor();
+    bool CreateGlobalRootSignature();
+    bool CreateRayTracingPipeline();
+    bool CreateShaderTable();
+    bool EnsureBootstrapSceneGeometry();
+    bool BuildAccelerationStructures(ID3D12GraphicsCommandList* commandList);
 
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // Ray tracing resources
     Microsoft::WRL::ComPtr<ID3D12Resource> raytracingOutput_;
     Microsoft::WRL::ComPtr<ID3D12Resource> denoisedOutput_;
     Microsoft::WRL::ComPtr<ID3D12Resource> temporalHistory_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> shaderTable_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> blas_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> tlas_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> blasScratch_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> tlasScratch_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> instanceDescUpload_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> bootstrapVertexBuffer_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> bootstrapIndexBuffer_;
+    DescriptorAllocation outputUavAllocation_;
+
+    ID3D12Resource* sceneVertexBuffer_;
+    ID3D12Resource* sceneIndexBuffer_;
+    uint32_t sceneVertexCount_;
+    uint32_t sceneVertexStride_;
+    uint32_t sceneIndexCount_;
+    DXGI_FORMAT sceneIndexFormat_;
+    uint64_t blasCapacityBytes_;
+    uint64_t blasScratchCapacityBytes_;
+    uint64_t tlasCapacityBytes_;
+    uint64_t tlasScratchCapacityBytes_;
+    Vec3 cameraPosition_;
+    Vec3 cameraForward_;
+    Vec3 cameraRight_;
+    Vec3 cameraUp_;
+    float cameraTanHalfFovY_;
+    float cameraAspect_;
 
     // Pipeline
     Microsoft::WRL::ComPtr<ID3D12StateObject> rtpso_;
+    Microsoft::WRL::ComPtr<ID3D12StateObjectProperties> rtpsoProperties_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> globalRootSignature_;
 
     // Settings
@@ -356,6 +427,8 @@ private:
 
     bool dxrAvailable_;
     bool initialized_;
+    bool accelerationStructuresBuilt_;
+    uint32_t frameIndex_;
 };
 
 //=============================================================================
@@ -370,6 +443,7 @@ public:
 
     // Initialize GI manager
     bool Initialize(DX12Device* device, DX12DescriptorHeap* srvHeap,
+                   DX12DescriptorHeapManager* heapManager,
                    uint32_t width, uint32_t height);
 
     // Set GI technique
@@ -398,6 +472,19 @@ public:
     // Access to subsystems
     AmbientOcclusionManager* GetAOManager() { return gi_.GetAOManager(); }
     LightProbeManager* GetProbeManager() { return gi_.GetProbeManager(); }
+    ID3D12Resource* GetGIOutput() { return gi_.GetGIOutput(); }
+    void SetRayTracingSceneGeometry(ID3D12Resource* vertexBuffer,
+                                    uint32_t vertexCount,
+                                    uint32_t vertexStride,
+                                    ID3D12Resource* indexBuffer,
+                                    uint32_t indexCount,
+                                    DXGI_FORMAT indexFormat,
+                                    bool forceRebuild = true);
+    void SetRayTracingCamera(const Vec3& position,
+                             const Vec3& target,
+                             const Vec3& up,
+                             float verticalFovRadians,
+                             float aspectRatio);
 
     // Is initialized
     bool IsInitialized() const { return initialized_; }
@@ -406,6 +493,7 @@ private:
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
+    DX12DescriptorHeapManager* heapManager_;
 
     // GI systems
     GlobalIllumination gi_;

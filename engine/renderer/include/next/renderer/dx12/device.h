@@ -16,6 +16,7 @@ struct DX12Features {
     bool meshShaders = false;
     bool raytracing = false;
     bool variableShading = false;
+    bool samplerFeedback = false;
     bool workGraphs = false;
     uint32_t featureLevel = 0;
 };
@@ -40,7 +41,8 @@ public:
     bool SupportsMeshShaders() const { return features_.meshShaders; }
     bool SupportsRayTracing() const { return features_.raytracing; }
     bool SupportsVRS() const { return features_.variableShading; }
-    bool IsDX12U() const { return features_.featureLevel >= 0x1202; }
+    bool SupportsSamplerFeedback() const { return features_.samplerFeedback; }
+    bool IsDX12U() const { return features_.featureLevel >= static_cast<uint32_t>(D3D_FEATURE_LEVEL_12_2); }
 
     // Adapter Info
     std::string GetAdapterDescription() const;

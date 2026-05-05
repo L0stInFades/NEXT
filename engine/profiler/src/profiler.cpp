@@ -1,7 +1,7 @@
 #include "next/profiler/profiler.h"
 #include "next/profiler/stats.h"
 #include "next/foundation/logger.h"
-#include <windows.h>
+#include <chrono>
 #include <sstream>
 
 namespace Next {
@@ -11,9 +11,7 @@ Profiler::Profiler()
     , isFrameActive_(false)
     , currentFrame_({0, 0.0, 0.0, 0, 0})
 {
-    LARGE_INTEGER frequency;
-    QueryPerformanceFrequency(&frequency);
-    frequencyMs_ = 1000.0 / static_cast<double>(frequency.QuadPart);
+    frequencyMs_ = 0.000001;
 }
 
 Profiler::~Profiler() {
@@ -91,9 +89,8 @@ Profiler& Profiler::Instance() {
 }
 
 uint64_t Profiler::GetCurrentTimestamp() {
-    LARGE_INTEGER timestamp;
-    QueryPerformanceCounter(&timestamp);
-    return static_cast<uint64_t>(timestamp.QuadPart);
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }
 
 double Profiler::TimestampToMs(uint64_t timestamp) {

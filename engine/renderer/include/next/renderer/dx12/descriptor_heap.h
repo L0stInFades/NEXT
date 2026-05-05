@@ -30,6 +30,7 @@ public:
     ID3D12DescriptorHeap* GetHeap() const { return heap_.Get(); }
     UINT GetDescriptorSize() const { return descriptorSize_; }
     UINT GetNumDescriptors() const { return numDescriptors_; }
+    bool IsShaderVisible() const { return (heapDesc_.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) != 0; }
 
 private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_;
