@@ -369,6 +369,10 @@ public:
     bool IsInitialized() const { return initialized_; }
 
 private:
+    bool CreateShaders();
+    bool CreateRootSignature();
+    bool CreatePipelineStates();
+
     // Device
     DX12Device* device_;
     DX12DescriptorHeap* srvHeap_;
@@ -394,6 +398,7 @@ private:
     uint32_t height_;
 
     bool initialized_;
+    bool renderEvidenceLogged_;
 };
 
 } // namespace Next

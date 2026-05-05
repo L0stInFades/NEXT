@@ -2,9 +2,33 @@
 #include "next/renderer/dx12/device.h"
 #include "next/renderer/dx12/command_queue.h"
 #include "next/foundation/logger.h"
+#include <dxgi1_5.h>
 #include <windows.h>
 
 namespace Next {
+
+namespace {
+
+bool SupportsPresentAllowTearing(IDXGIFactory4* factory) {
+    if (!factory) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
+    HRESULT hr = factory->QueryInterface(IID_PPV_ARGS(&factory5));
+    if (FAILED(hr) || !factory5) {
+        return false;
+    }
+
+    BOOL allowTearing = FALSE;
+    hr = factory5->CheckFeatureSupport(
+        DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+        &allowTearing,
+        sizeof(allowTearing));
+    return SUCCEEDED(hr) && allowTearing == TRUE;
+}
+
+} // namespace
 
 DX12Swapchain::DX12Swapchain()
     : device_(nullptr), width_(0), height_(0), bufferCount_(2), format_(DXGI_FORMAT_R8G8B8A8_UNORM), initialized_(false) {
@@ -33,17 +57,9 @@ bool DX12Swapchain::Initialize(DX12Device* device, DX12CommandQueue* commandQueu
 
     // Check present tearing support
     UINT allowTearing = 0;
-    if (device->GetFactory()) {
-        DXGI_FEATURE_DATA_PRESENT_ALLOW_TEARING tearingSupport = {};
-        HRESULT hrTearing = device->GetFactory()->CheckFeatureSupport(
-            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-            &tearingSupport,
-            sizeof(tearingSupport)
-        );
-        if (SUCCEEDED(hrTearing) && tearingSupport.AllowTearing) {
-            allowTearing = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-            NEXT_LOG_DEBUG("Present allows tearing");
-        }
+    if (SupportsPresentAllowTearing(device->GetFactory())) {
+        allowTearing = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        NEXT_LOG_DEBUG("Present allows tearing");
     }
 
     // Use legacy DXGI_SWAP_CHAIN_DESC for simplicity
@@ -196,19 +212,11 @@ bool DX12Swapchain::Resize(UINT width, UINT height) {
 
     // Check tearing support through DXGI factory.
     UINT allowTearing = 0;
-    if (device_ && device_->GetFactory()) {
-        DXGI_FEATURE_DATA_PRESENT_ALLOW_TEARING tearingSupport = {};
-        HRESULT hrTearing = device_->GetFactory()->CheckFeatureSupport(
-            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-            &tearingSupport,
-            sizeof(tearingSupport)
-        );
-        if (SUCCEEDED(hrTearing) && tearingSupport.AllowTearing) {
-            allowTearing = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-            NEXT_LOG_DEBUG("Using tearing mode for swapchain resize");
-        } else {
-            NEXT_LOG_DEBUG("Tearing not supported, using flip discard");
-        }
+    if (device_ && SupportsPresentAllowTearing(device_->GetFactory())) {
+        allowTearing = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        NEXT_LOG_DEBUG("Using tearing mode for swapchain resize");
+    } else {
+        NEXT_LOG_DEBUG("Tearing not supported, using flip discard");
     }
 
     // Resize swapchain
